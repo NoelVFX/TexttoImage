@@ -15,6 +15,7 @@ from OpenRouterVideo import (
     get_video_status,
     submit_video_job,
 )
+from OrchestratedVideo import VideoOrchestrationError, orchestrate_video_first_frame
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -102,21 +103,28 @@ def start_video_generation():
         return jsonify({"error": "Please enter a prompt before generating a video."}), 400
 
     frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
-    start_frame_url = build_pollinations_url(
-        f"Static cinematic first frame for video: {prompt}",
-        model_choice=DEFAULT_MODEL,
-        width=frame_width,
-        height=frame_height,
-    )
+
+    try:
+        first_frame = orchestrate_video_first_frame(
+            prompt,
+            aspect_ratio=selected_ratio,
+            width=frame_width,
+            height=frame_height,
+            model_choice=DEFAULT_MODEL,
+        )
+    except VideoOrchestrationError as exc:
+        return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     try:
         job = submit_video_job(
-            prompt,
+            first_frame.optimized_prompt,
             aspect_ratio=selected_ratio,
             duration=DEFAULT_VIDEO_DURATION,
             resolution=DEFAULT_VIDEO_RESOLUTION,
             generate_audio=False,
-            first_frame_url=start_frame_url,
+            first_frame_url=first_frame.start_frame_url,
         )
     except (OpenRouterVideoError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 502
@@ -127,8 +135,12 @@ def start_video_generation():
             "polling_url": job.get("polling_url"),
             "status": job.get("status", "pending"),
             "model": "bytedance/seedance-2.0-fast",
-            "start_frame_url": start_frame_url,
-            "workflow": "pollinations-start-frame-to-openrouter-i2v",
+            "start_frame_url": first_frame.start_frame_url,
+            "optimized_prompt": first_frame.optimized_prompt,
+            "vision_critique": first_frame.critique.to_dict(),
+            "frame_attempts": first_frame.attempts,
+            "frame_seed": first_frame.seed,
+            "workflow": "pollinations-vision-gated-start-frame-to-openrouter-i2v",
         }
     ), 202
 

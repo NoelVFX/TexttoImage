@@ -23,15 +23,18 @@ def build_pollinations_url(
     model_choice: str = DEFAULT_MODEL,
     width: int = 1024,
     height: int = 1024,
+    seed: int | None = None,
 ) -> str:
     encoded_prompt = urllib.parse.quote(prompt_text)
-    return (
-        f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
-        f"?width={width}"
-        f"&height={height}"
-        f"&model={urllib.parse.quote(model_choice)}"
-        f"&nologo=true"
-    )
+    query = {
+        "width": str(width),
+        "height": str(height),
+        "model": model_choice,
+        "nologo": "true",
+    }
+    if seed is not None:
+        query["seed"] = str(seed)
+    return f"{POLLINATIONS_BASE_URL}/{encoded_prompt}?{urllib.parse.urlencode(query)}"
 
 
 def generate_pollinations_image_bytes(
