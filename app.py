@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
 from OpenRouterVideo import (
     DEFAULT_VIDEO_ASPECT_RATIO,
@@ -14,6 +14,7 @@ from OpenRouterVideo import (
     OpenRouterVideoError,
     extract_video_url,
     get_video_status,
+    get_video_content,
     submit_video_job,
 )
 from OrchestratedVideo import VideoOrchestrationError, orchestrate_video_first_frame
@@ -187,15 +188,32 @@ def video_generation_status(job_id: str):
 
     status = status_payload.get("status", "unknown")
     video_url = extract_video_url(status_payload)
+    job_id_for_response = status_payload.get("id", job_id)
+    if status == "completed" and (
+        not video_url or video_url.startswith("https://openrouter.ai/api/") or video_url.startswith("/api/")
+    ):
+        video_url = url_for("video_content", job_id=job_id_for_response)
     return jsonify(
         {
-            "id": status_payload.get("id", job_id),
+            "id": job_id_for_response,
             "status": status,
             "video_url": video_url,
             "error": status_payload.get("error"),
             "usage": status_payload.get("usage"),
         }
     )
+
+
+@app.get("/video/content/<path:job_id>")
+def video_content(job_id: str):
+    try:
+        content, content_type = get_video_content(job_id)
+    except (OpenRouterVideoError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected error while proxying OpenRouter video content")
+        return jsonify({"error": "Video content download failed.", "detail": str(exc)}), 500
+    return Response(content, mimetype=content_type)
 
 
 @app.get("/download/<path:filename>")

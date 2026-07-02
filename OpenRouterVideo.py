@@ -139,6 +139,20 @@ def get_video_status(job_id: str, *, timeout: int = 30) -> Dict[str, Any]:
     return response.json()
 
 
+def get_video_content(job_id: str, *, index: int = 0, timeout: int = 120) -> tuple[bytes, str]:
+    """Download generated video bytes from OpenRouter using server-side auth."""
+    if not job_id or not job_id.strip():
+        raise ValueError("Job id is required.")
+    response = requests.get(
+        f"{OPENROUTER_API_BASE}/videos/{job_id.strip()}/content?index={index}",
+        headers=openrouter_headers(),
+        timeout=timeout,
+    )
+    _raise_for_openrouter_error(response)
+    content_type = response.headers.get("content-type", "video/mp4").split(";", 1)[0]
+    return response.content, content_type
+
+
 def extract_video_url(status_payload: Dict[str, Any]) -> str | None:
     """Return the first downloadable video URL from a completed status payload."""
     unsigned_urls = status_payload.get("unsigned_urls") or []

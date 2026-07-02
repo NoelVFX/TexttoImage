@@ -178,6 +178,7 @@
           throw new Error('Video completed, but OpenRouter did not return a downloadable video URL.');
         }
         videoEl.src = data.video_url;
+        videoEl.load();
         videoEl.classList.remove('hidden');
         videoDownload.href = data.video_url;
         videoDownload.classList.remove('hidden');

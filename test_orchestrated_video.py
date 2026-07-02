@@ -237,6 +237,31 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn("Video status lookup failed", payload["error"])
         self.assertIn("OpenRouter returned", payload["detail"])
 
+    @patch("app.get_video_status")
+    def test_completed_video_status_uses_same_origin_proxy_for_openrouter_api_content_url(self, mock_status):
+        mock_status.return_value = {
+            "id": "job_123",
+            "status": "completed",
+            "unsigned_urls": [],
+        }
+
+        response = self.client.get("/video/status/job_123")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["video_url"], "/video/content/job_123")
+
+    @patch("app.get_video_content")
+    def test_video_content_proxies_openrouter_bytes_with_video_content_type(self, mock_content):
+        mock_content.return_value = (b"fake mp4 bytes", "video/mp4")
+
+        response = self.client.get("/video/content/job_123")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type.split(";", 1)[0], "video/mp4")
+        self.assertEqual(response.data, b"fake mp4 bytes")
+
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_submits_paid_i2v_only_after_approved_frame(
