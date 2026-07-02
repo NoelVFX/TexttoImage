@@ -54,6 +54,11 @@ def index():
     return render_index()
 
 
+@app.get("/generate")
+def generate_form_redirect():
+    return render_index()
+
+
 @app.post("/generate")
 def generate():
     prompt = request.form.get("prompt", "").strip()

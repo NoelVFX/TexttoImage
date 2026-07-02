@@ -60,8 +60,8 @@ Open http://localhost:5000.
 
 This is a standard Flask app, but the video safety gate shells out to the local `hermes` CLI. For platforms like Render, Railway, Fly.io, or Heroku-style hosts:
 
-- Build command: `pip install -r requirements.txt` plus your Hermes Agent install step
-- Start command: `gunicorn app:app`
+- Build command: `pip install -r requirements.txt` (`hermes-agent` is included so the `hermes` CLI is installed during deploy)
+- Start command: `gunicorn --timeout 180 app:app`
 - Required environment variable: `OPENROUTER_API_KEY`
 - Required runtime dependency for video review: `hermes` available on `PATH`, or set `HERMES_COMMAND` to its absolute path
 - Hermes must be configured with a vision-capable model/provider in that deployment environment

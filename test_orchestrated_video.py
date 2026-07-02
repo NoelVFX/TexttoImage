@@ -119,6 +119,12 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = app.app.test_client()
 
+    def test_get_generate_renders_index_instead_of_html_method_error(self):
+        response = self.client.get("/generate")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Generate images and videos from prompts", response.data)
+
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_does_not_submit_paid_i2v_when_vision_rejects(
