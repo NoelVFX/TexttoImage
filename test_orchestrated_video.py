@@ -100,7 +100,7 @@ class HermesReviewBackendTests(unittest.TestCase):
         self.assertIn("--image", command)
         image_path = Path(command[command.index("--image") + 1])
         self.assertEqual(image_path.suffix, ".jpg")
-        self.assertEqual(kwargs["timeout"], 45)
+        self.assertEqual(kwargs["timeout"], 12)
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["text"])
 

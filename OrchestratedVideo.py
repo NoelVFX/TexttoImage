@@ -17,7 +17,10 @@ from TexttoImage import DEFAULT_MODEL, build_pollinations_url
 
 
 DEFAULT_MAX_FRAME_ATTEMPTS = 1
-DEFAULT_HERMES_TIMEOUT = 45
+# Keep the entire synchronous /video/start path under the common 30-second
+# platform/proxy timeout. If Hermes cannot review quickly, fail with JSON
+# instead of letting Railway/Gunicorn kill the worker and return HTML.
+DEFAULT_HERMES_TIMEOUT = 12
 DEFAULT_HERMES_REVIEW_PROVIDER = "openrouter"
 DEFAULT_HERMES_REVIEW_MODEL = "openai/gpt-4o-mini"
 MIN_IMAGE_BYTES = 2048
@@ -413,7 +416,7 @@ def critique_storyboard_image(
     return _fallback_structural_critique(image_bytes, content_type)
 
 
-def download_storyboard_bytes(url: str, *, timeout: int = 25) -> tuple[bytes, str]:
+def download_storyboard_bytes(url: str, *, timeout: int = 8) -> tuple[bytes, str]:
     response = requests.get(url, timeout=timeout)
     content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
     if response.status_code != 200:

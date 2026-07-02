@@ -140,6 +140,7 @@ def start_video_generation():
             resolution=DEFAULT_VIDEO_RESOLUTION,
             generate_audio=False,
             first_frame_url=first_frame.start_frame_url,
+            timeout=max(5, int(os.environ.get("VIDEO_SUBMIT_TIMEOUT", "8"))),
         )
     except (OpenRouterVideoError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 502
