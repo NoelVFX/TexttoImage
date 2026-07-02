@@ -139,6 +139,33 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn("Vision Agent rejected", response.get_json()["error"])
         mock_submit.assert_not_called()
 
+    @patch("app.orchestrate_video_first_frame")
+    def test_start_video_generation_returns_json_when_orchestrator_crashes(self, mock_orchestrate):
+        mock_orchestrate.side_effect = RuntimeError("Pollinations timeout returned an HTML gateway page")
+
+        response = self.client.post(
+            "/video/start",
+            json={"prompt": "gold coins", "aspect_ratio": "1:1"},
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.content_type.split(";", 1)[0], "application/json")
+        payload = response.get_json()
+        self.assertIn("Video generation failed before the paid I2V job was submitted", payload["error"])
+        self.assertIn("Pollinations timeout", payload["detail"])
+
+    @patch("app.get_video_status")
+    def test_video_status_returns_json_when_status_lookup_crashes(self, mock_status):
+        mock_status.side_effect = RuntimeError("OpenRouter returned an HTML error page")
+
+        response = self.client.get("/video/status/job_123")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.content_type.split(";", 1)[0], "application/json")
+        payload = response.get_json()
+        self.assertIn("Video status lookup failed", payload["error"])
+        self.assertIn("OpenRouter returned", payload["detail"])
+
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_submits_paid_i2v_only_after_approved_frame(

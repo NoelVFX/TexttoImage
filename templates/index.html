@@ -151,9 +151,19 @@
       videoButton.textContent = 'Generate video';
     };
 
+    const parseJsonResponse = async (response, fallbackMessage) => {
+      const raw = await response.text();
+      try {
+        return raw ? JSON.parse(raw) : {};
+      } catch (error) {
+        const preview = raw.replace(/\s+/g, ' ').trim().slice(0, 240);
+        throw new Error(`${fallbackMessage} Server returned non-JSON response (${response.status}): ${preview || response.statusText}`);
+      }
+    };
+
     const pollVideoJob = async (jobId, attempt = 0) => {
       const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
-      const data = await response.json();
+      const data = await parseJsonResponse(response, 'Video status request failed.');
 
       if (!response.ok || data.error) {
         throw new Error(data.error || 'Video status request failed.');
@@ -216,7 +226,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        const data = await response.json();
+        const data = await parseJsonResponse(response, 'Video generation request failed.');
         if (!response.ok || data.error) {
           throw new Error(data.error || 'Video generation request failed.');
         }

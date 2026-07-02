@@ -116,6 +116,15 @@ def start_video_generation():
         return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Unexpected error while preparing video first frame")
+        return jsonify(
+            {
+                "error": "Video generation failed before the paid I2V job was submitted.",
+                "detail": str(exc),
+                "workflow": "vision-gated-i2v-blocked",
+            }
+        ), 500
 
     try:
         job = submit_video_job(
@@ -128,6 +137,14 @@ def start_video_generation():
         )
     except (OpenRouterVideoError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected error while submitting OpenRouter video job")
+        return jsonify(
+            {
+                "error": "Video generation failed while submitting the paid I2V job.",
+                "detail": str(exc),
+            }
+        ), 500
 
     return jsonify(
         {
@@ -151,6 +168,14 @@ def video_generation_status(job_id: str):
         status_payload = get_video_status(job_id)
     except (OpenRouterVideoError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected error while checking OpenRouter video status")
+        return jsonify(
+            {
+                "error": "Video status lookup failed.",
+                "detail": str(exc),
+            }
+        ), 500
 
     status = status_payload.get("status", "unknown")
     video_url = extract_video_url(status_payload)
