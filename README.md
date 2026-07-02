@@ -1,6 +1,6 @@
 # Text to Image and Video Web App
 
-A Flask web app that turns prompts into images with Pollinations and videos with OpenRouter's ByteDance Seedance 2.0 Fast model.
+A Flask web app that turns prompts into images with Pollinations and uses a cost-saving Pollinations-to-OpenRouter I2V workflow for videos.
 
 ## Features
 
@@ -11,7 +11,10 @@ A Flask web app that turns prompts into images with Pollinations and videos with
 - Generated image preview on the same page
 - Image download link
 - Text-to-video prompt input in the browser
-- Video generation through OpenRouter model `bytedance/seedance-2.0-fast`
+- Cost-saving video workflow:
+  1. Build a free static first frame with Pollinations
+  2. Pass that image URL into OpenRouter as `frame_images[0]` / `first_frame`
+  3. Animate it with OpenRouter model `bytedance/seedance-2.0-fast`
 - Video aspect ratio selector:
   - `1:1` square
   - `16:9` widescreen

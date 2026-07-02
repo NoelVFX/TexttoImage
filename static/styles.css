@@ -243,6 +243,14 @@ button:disabled {
   aspect-ratio: 16 / 9;
 }
 
+.start-frame-preview {
+  margin: 18px 0;
+}
+
+.start-frame-image {
+  max-height: 360px;
+}
+
 .empty-state {
   min-height: 310px;
   display: grid;

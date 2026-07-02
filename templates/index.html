@@ -70,7 +70,7 @@
       <div class="section-heading">
         <p class="eyebrow">OpenRouter video generation</p>
         <h2>Generate a Seedance 2.0 Fast video</h2>
-        <p class="section-copy">Uses OpenRouter model <code>bytedance/seedance-2.0-fast</code>. Set <code>OPENROUTER_API_KEY</code> in your environment before generating.</p>
+        <p class="section-copy">Cost-saving workflow: first creates a free Pollinations still image, then sends that image as the first frame into OpenRouter I2V model <code>bytedance/seedance-2.0-fast</code>. Set <code>OPENROUTER_API_KEY</code> in your environment before generating.</p>
       </div>
 
       <section class="card app-card">
@@ -91,7 +91,7 @@
             </div>
           </fieldset>
 
-          <p class="form-note">Video settings: Seedance 2.0 Fast, 720p, {{ default_video_duration }} seconds, no generated audio.</p>
+          <p class="form-note">Cost saver: Pollinations creates a free first frame, then Seedance 2.0 Fast animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
           <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 
@@ -114,6 +114,10 @@
             <a class="download-button hidden" id="video-download" href="#" target="_blank" rel="noopener" download="generated-video.mp4">Download</a>
           </div>
           <p class="status-line" id="video-status-line">Waiting for OpenRouter...</p>
+          <div class="start-frame-preview hidden" id="start-frame-preview">
+            <p class="eyebrow">Free Pollinations start frame</p>
+            <img class="generated-image start-frame-image" id="start-frame-image" alt="Pollinations-generated starting frame for the video">
+          </div>
           <video class="generated-video hidden" id="generated-video" controls playsinline></video>
         </div>
       </section>
@@ -137,6 +141,8 @@
     const videoLine = document.getElementById('video-status-line');
     const videoEl = document.getElementById('generated-video');
     const videoDownload = document.getElementById('video-download');
+    const startFramePreview = document.getElementById('start-frame-preview');
+    const startFrameImage = document.getElementById('start-frame-image');
 
     const setVideoError = (message) => {
       videoError.textContent = message;
@@ -155,7 +161,7 @@
 
       const status = data.status || 'unknown';
       videoTitle.textContent = status === 'completed' ? 'Your result' : `Status: ${status}`;
-      videoLine.textContent = `OpenRouter job ${jobId}: ${status}`;
+      videoLine.textContent = `OpenRouter I2V job ${jobId}: ${status}`;
 
       if (status === 'completed') {
         if (!data.video_url) {
@@ -189,6 +195,8 @@
       videoPanel.classList.remove('hidden');
       videoEl.classList.add('hidden');
       videoEl.removeAttribute('src');
+      startFramePreview.classList.add('hidden');
+      startFrameImage.removeAttribute('src');
       videoDownload.classList.add('hidden');
       videoDownload.href = '#';
       videoTitle.textContent = 'Submitting job...';
@@ -215,8 +223,12 @@
         if (!data.id) {
           throw new Error('OpenRouter did not return a video job id.');
         }
-        videoTitle.textContent = 'Video job submitted';
-        videoLine.textContent = `OpenRouter job ${data.id}: ${data.status || 'pending'}`;
+        if (data.start_frame_url) {
+          startFrameImage.src = data.start_frame_url;
+          startFramePreview.classList.remove('hidden');
+        }
+        videoTitle.textContent = 'I2V job submitted';
+        videoLine.textContent = `Free start frame generated; OpenRouter I2V job ${data.id}: ${data.status || 'pending'}`;
         window.setTimeout(() => pollVideoJob(data.id).catch((error) => setVideoError(error.message)), 5000);
       } catch (error) {
         setVideoError(error.message);

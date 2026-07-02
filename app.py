@@ -24,6 +24,11 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
+VIDEO_START_FRAME_SIZES = {
+    "1:1": (720, 720),
+    "16:9": (1280, 720),
+}
+
 
 def render_index(**overrides):
     context = {
@@ -96,6 +101,14 @@ def start_video_generation():
     if not prompt:
         return jsonify({"error": "Please enter a prompt before generating a video."}), 400
 
+    frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    start_frame_url = build_pollinations_url(
+        f"Static cinematic first frame for video: {prompt}",
+        model_choice=DEFAULT_MODEL,
+        width=frame_width,
+        height=frame_height,
+    )
+
     try:
         job = submit_video_job(
             prompt,
@@ -103,6 +116,7 @@ def start_video_generation():
             duration=DEFAULT_VIDEO_DURATION,
             resolution=DEFAULT_VIDEO_RESOLUTION,
             generate_audio=False,
+            first_frame_url=start_frame_url,
         )
     except (OpenRouterVideoError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 502
@@ -113,6 +127,8 @@ def start_video_generation():
             "polling_url": job.get("polling_url"),
             "status": job.get("status", "pending"),
             "model": "bytedance/seedance-2.0-fast",
+            "start_frame_url": start_frame_url,
+            "workflow": "pollinations-start-frame-to-openrouter-i2v",
         }
     ), 202
 

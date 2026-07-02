@@ -82,9 +82,15 @@ def submit_video_job(
     duration: int = DEFAULT_VIDEO_DURATION,
     resolution: str = DEFAULT_VIDEO_RESOLUTION,
     generate_audio: bool = False,
+    first_frame_url: str | None = None,
     timeout: int = 30,
 ) -> Dict[str, Any]:
-    """Submit a Seedance 2.0 Fast text-to-video job to OpenRouter."""
+    """Submit a Seedance 2.0 Fast video job to OpenRouter.
+
+    When first_frame_url is provided, OpenRouter treats the request as
+    image-to-video (I2V). The app uses a free Pollinations image URL for that
+    first frame to reduce paid video-token usage versus pure text-to-video.
+    """
     prompt = prompt.strip()
     if not prompt:
         raise ValueError("Prompt is required.")
@@ -99,6 +105,15 @@ def submit_video_job(
         "duration": duration,
         "generate_audio": generate_audio,
     }
+
+    if first_frame_url:
+        payload["frame_images"] = [
+            {
+                "type": "image_url",
+                "image_url": {"url": first_frame_url},
+                "frame_type": "first_frame",
+            }
+        ]
 
     response = requests.post(
         f"{OPENROUTER_API_BASE}/videos",
