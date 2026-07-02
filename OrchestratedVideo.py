@@ -16,8 +16,10 @@ from OpenRouterVideo import load_local_env
 from TexttoImage import DEFAULT_MODEL, build_pollinations_url
 
 
-DEFAULT_MAX_FRAME_ATTEMPTS = 2
-DEFAULT_HERMES_TIMEOUT = 120
+DEFAULT_MAX_FRAME_ATTEMPTS = 1
+DEFAULT_HERMES_TIMEOUT = 45
+DEFAULT_HERMES_REVIEW_PROVIDER = "openrouter"
+DEFAULT_HERMES_REVIEW_MODEL = "openai/gpt-4o-mini"
 MIN_IMAGE_BYTES = 2048
 IMAGE_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -166,6 +168,8 @@ def build_hermes_review_command(
     hermes_command: str | None = None,
 ) -> list[str]:
     _load_project_env()
+    provider = provider or os.getenv("HERMES_REVIEW_PROVIDER") or DEFAULT_HERMES_REVIEW_PROVIDER
+    model = model or os.getenv("HERMES_REVIEW_MODEL") or DEFAULT_HERMES_REVIEW_MODEL
     command = [hermes_command or os.getenv("HERMES_COMMAND", "hermes"), "chat", "-Q"]
     if provider:
         command.extend(["--provider", provider])
@@ -174,6 +178,7 @@ def build_hermes_review_command(
     command.extend(
         [
             "--ignore-rules",
+            "--ignore-user-config",
             "--source",
             "tool",
             "--max-turns",
@@ -194,9 +199,9 @@ def _run_hermes_text_prompt(
     timeout: int = DEFAULT_HERMES_TIMEOUT,
 ) -> str | None:
     _load_project_env()
-    command = [os.getenv("HERMES_COMMAND", "hermes"), "chat", "-Q", "--ignore-rules", "--source", "tool", "--max-turns", "1"]
-    provider = os.getenv("HERMES_REVIEW_PROVIDER")
-    model = os.getenv("HERMES_REVIEW_MODEL")
+    command = [os.getenv("HERMES_COMMAND", "hermes"), "chat", "-Q", "--ignore-rules", "--ignore-user-config", "--source", "tool", "--max-turns", "1"]
+    provider = os.getenv("HERMES_REVIEW_PROVIDER") or DEFAULT_HERMES_REVIEW_PROVIDER
+    model = os.getenv("HERMES_REVIEW_MODEL") or DEFAULT_HERMES_REVIEW_MODEL
     if provider:
         command.extend(["--provider", provider])
     if model:
@@ -408,7 +413,7 @@ def critique_storyboard_image(
     return _fallback_structural_critique(image_bytes, content_type)
 
 
-def download_storyboard_bytes(url: str, *, timeout: int = 60) -> tuple[bytes, str]:
+def download_storyboard_bytes(url: str, *, timeout: int = 25) -> tuple[bytes, str]:
     response = requests.get(url, timeout=timeout)
     content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
     if response.status_code != 200:

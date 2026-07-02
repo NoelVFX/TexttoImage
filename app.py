@@ -116,6 +116,7 @@ def start_video_generation():
             width=frame_width,
             height=frame_height,
             model_choice=DEFAULT_MODEL,
+            max_attempts=max(1, int(os.environ.get("VIDEO_ORCHESTRATOR_MAX_ATTEMPTS", "1"))),
         )
     except VideoOrchestrationError as exc:
         return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422

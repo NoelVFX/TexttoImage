@@ -30,6 +30,7 @@ class HermesReviewBackendTests(unittest.TestCase):
 
         self.assertEqual(command[:3], ["hermes", "chat", "-Q"])
         self.assertIn("--ignore-rules", command)
+        self.assertIn("--ignore-user-config", command)
         self.assertIn("--source", command)
         self.assertIn("tool", command)
         self.assertIn("--max-turns", command)
@@ -41,6 +42,19 @@ class HermesReviewBackendTests(unittest.TestCase):
         self.assertIn("-m", command)
         self.assertIn("openai/gpt-4o-mini", command)
         self.assertEqual(command[-2:], ["-q", "review prompt"])
+
+    def test_build_hermes_review_command_defaults_to_openrouter_vision_model(self):
+        from OrchestratedVideo import build_hermes_review_command
+
+        command = build_hermes_review_command(
+            image_path="/tmp/storyboard.jpg",
+            prompt="review prompt",
+        )
+
+        self.assertIn("--provider", command)
+        self.assertIn("openrouter", command)
+        self.assertIn("-m", command)
+        self.assertIn("openai/gpt-4o-mini", command)
 
     def test_critique_storyboard_image_uses_hermes_cli_and_parses_json(self):
         from OrchestratedVideo import critique_storyboard_image
@@ -86,7 +100,7 @@ class HermesReviewBackendTests(unittest.TestCase):
         self.assertIn("--image", command)
         image_path = Path(command[command.index("--image") + 1])
         self.assertEqual(image_path.suffix, ".jpg")
-        self.assertEqual(kwargs["timeout"], 120)
+        self.assertEqual(kwargs["timeout"], 45)
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["text"])
 

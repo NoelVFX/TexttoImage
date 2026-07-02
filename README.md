@@ -41,8 +41,9 @@ Optional variables:
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`
-- `HERMES_REVIEW_PROVIDER` and `HERMES_REVIEW_MODEL` - optional provider/model override for the Hermes review subprocess
+- `HERMES_REVIEW_PROVIDER` and `HERMES_REVIEW_MODEL` - provider/model override for the Hermes review subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`
 - `VIDEO_ORCHESTRATOR_PROMPT_OPTIMIZER=hermes` - optionally asks Hermes to optimize the text prompt too; default `local`
+- `VIDEO_ORCHESTRATOR_MAX_ATTEMPTS` - number of free-frame review attempts per request; default `1` for web timeout safety
 - `VIDEO_ORCHESTRATOR_REQUIRE_VISION=true` - blocks video generation if the selected visual reviewer is unavailable
 
 ## Run locally
@@ -61,7 +62,7 @@ Open http://localhost:5000.
 This is a standard Flask app, but the video safety gate shells out to the local `hermes` CLI. For platforms like Render, Railway, Fly.io, or Heroku-style hosts:
 
 - Build command: `pip install -r requirements.txt` (`hermes-agent` is included so the `hermes` CLI is installed during deploy)
-- Start command: `gunicorn --timeout 180 app:app`
+- Start command: `gunicorn --timeout 180 app:app` (also pinned in `railway.json` for Railway)
 - Required environment variable: `OPENROUTER_API_KEY`
 - Required runtime dependency for video review: `hermes` available on `PATH`, or set `HERMES_COMMAND` to its absolute path
 - Hermes must be configured with a vision-capable model/provider in that deployment environment
@@ -72,7 +73,7 @@ This is a standard Flask app, but the video safety gate shells out to the local 
 
 ```bash
 git init -b main
-git add app.py TexttoImage.py OrchestratedVideo.py OpenRouterVideo.py templates/index.html static/styles.css static/generated/.gitkeep test_orchestrated_video.py requirements.txt Procfile README.md .gitignore .env.example
+git add app.py TexttoImage.py OrchestratedVideo.py OpenRouterVideo.py templates/index.html static/styles.css static/generated/.gitkeep test_orchestrated_video.py requirements.txt Procfile railway.json README.md .gitignore .env.example
 git commit -m "Build Flask text-to-image and video web app"
 git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
 git push -u origin main
@@ -87,4 +88,5 @@ git push -u origin main
 - `templates/index.html` - Web page template
 - `static/styles.css` - Styling
 - `static/generated/` - Runtime generated images, ignored by git
+- `Procfile` and `railway.json` - deployment start commands
 - `test_orchestrated_video.py` - regression tests for the vision-gated I2V workflow
