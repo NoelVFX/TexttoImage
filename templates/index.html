@@ -47,7 +47,7 @@
             <p class="eyebrow">Generated image</p>
             <h2>Your result</h2>
           </div>
-          <a class="download-button" href="{{ download_url }}">Download</a>
+          <a class="download-button" href="{{ download_url }}" target="_blank" rel="noopener" download="generated-image.jpg">Download</a>
         </div>
         <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
       {% else %}
