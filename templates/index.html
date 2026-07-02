@@ -3,69 +3,224 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Text to Image Generator</title>
+  <title>Text to Image and Video Generator</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
   <main class="page-shell">
     <section class="hero">
-      <p class="eyebrow">Pollinations text-to-image</p>
-      <h1>Generate an image from a prompt</h1>
-      <p class="subtitle">Type a prompt, choose square or widescreen, then download the generated result.</p>
+      <p class="eyebrow">Pollinations image + OpenRouter video</p>
+      <h1>Generate images and videos from prompts</h1>
+      <p class="subtitle">Type a prompt, choose an aspect ratio, then preview and download the generated media on the same page.</p>
     </section>
 
-    <section class="card app-card">
-      <form class="generator-form" method="post" action="{{ url_for('generate') }}">
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" name="prompt" rows="5" placeholder="A cinematic photo of a glass greenhouse on Mars at sunset" required>{{ prompt }}</textarea>
+    <section class="media-section">
+      <div class="section-heading">
+        <p class="eyebrow">Text to image</p>
+        <h2>Generate an image</h2>
+      </div>
 
-        <fieldset>
-          <legend>Aspect ratio</legend>
-          <div class="ratio-grid">
-            {% for ratio in aspect_ratios %}
-              <label class="ratio-option {% if ratio == selected_ratio %}selected{% endif %}">
-                <input type="radio" name="aspect_ratio" value="{{ ratio }}" {% if ratio == selected_ratio %}checked{% endif %}>
-                <span>{{ ratio }}</span>
-                <small>{% if ratio == '1024x1024' %}1:1 square{% else %}16:9 widescreen{% endif %}</small>
-              </label>
-            {% endfor %}
+      <section class="card app-card">
+        <form class="generator-form image-generator-form" method="post" action="{{ url_for('generate') }}">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" name="prompt" rows="5" placeholder="A cinematic photo of a glass greenhouse on Mars at sunset" required>{{ prompt }}</textarea>
+
+          <fieldset>
+            <legend>Aspect ratio</legend>
+            <div class="ratio-grid">
+              {% for ratio in aspect_ratios %}
+                <label class="ratio-option {% if ratio == selected_ratio %}selected{% endif %}">
+                  <input type="radio" name="aspect_ratio" value="{{ ratio }}" {% if ratio == selected_ratio %}checked{% endif %}>
+                  <span>{{ ratio }}</span>
+                  <small>{% if ratio == '1024x1024' %}1:1 square{% else %}16:9 widescreen{% endif %}</small>
+                </label>
+              {% endfor %}
+            </div>
+          </fieldset>
+
+          <button type="submit" id="generate-button">Generate image</button>
+        </form>
+
+        {% if error %}
+          <div class="alert" role="alert">{{ error }}</div>
+        {% endif %}
+      </section>
+
+      <section class="card result-card">
+        {% if image_url %}
+          <div class="result-header">
+            <div>
+              <p class="eyebrow">Generated image</p>
+              <h2>Your result</h2>
+            </div>
+            <a class="download-button" href="{{ download_url }}" target="_blank" rel="noopener" download="generated-image.jpg">Download</a>
           </div>
-        </fieldset>
-
-        <button type="submit" id="generate-button">Generate image</button>
-      </form>
-
-      {% if error %}
-        <div class="alert" role="alert">{{ error }}</div>
-      {% endif %}
+          <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+        {% else %}
+          <div class="empty-state">
+            <div class="empty-icon">✦</div>
+            <h2>Your image will appear here</h2>
+            <p>The image appears here after you submit an image prompt.</p>
+          </div>
+        {% endif %}
+      </section>
     </section>
 
-    <section class="card result-card">
-      {% if image_url %}
-        <div class="result-header">
-          <div>
-            <p class="eyebrow">Generated image</p>
-            <h2>Your result</h2>
+    <section class="media-section video-section">
+      <div class="section-heading">
+        <p class="eyebrow">OpenRouter video generation</p>
+        <h2>Generate a Seedance 2.0 Fast video</h2>
+        <p class="section-copy">Uses OpenRouter model <code>bytedance/seedance-2.0-fast</code>. Set <code>OPENROUTER_API_KEY</code> in your environment before generating.</p>
+      </div>
+
+      <section class="card app-card">
+        <form class="generator-form video-generator-form" id="video-form">
+          <label for="video-prompt">Video prompt</label>
+          <textarea id="video-prompt" name="prompt" rows="5" placeholder="A slow cinematic drone shot over a neon cyberpunk city in the rain" required>{{ video_prompt }}</textarea>
+
+          <fieldset>
+            <legend>Aspect ratio</legend>
+            <div class="ratio-grid">
+              {% for ratio, label in video_aspect_ratios.items() %}
+                <label class="ratio-option {% if ratio == selected_video_ratio %}selected{% endif %}">
+                  <input type="radio" name="aspect_ratio" value="{{ ratio }}" {% if ratio == selected_video_ratio %}checked{% endif %}>
+                  <span>{{ ratio }}</span>
+                  <small>{{ label }}</small>
+                </label>
+              {% endfor %}
+            </div>
+          </fieldset>
+
+          <p class="form-note">Video settings: Seedance 2.0 Fast, 720p, {{ default_video_duration }} seconds, no generated audio.</p>
+          <button type="submit" id="video-generate-button">Generate video</button>
+        </form>
+
+        <div class="alert hidden" id="video-error" role="alert"></div>
+      </section>
+
+      <section class="card result-card" id="video-result-card">
+        <div class="empty-state" id="video-empty-state">
+          <div class="empty-icon">▶</div>
+          <h2>Your video will appear here</h2>
+          <p>Video generation runs as an OpenRouter async job. Status updates will appear here while it generates.</p>
+        </div>
+
+        <div class="hidden" id="video-status-panel">
+          <div class="result-header">
+            <div>
+              <p class="eyebrow">Generated video</p>
+              <h2 id="video-status-title">Submitting job...</h2>
+            </div>
+            <a class="download-button hidden" id="video-download" href="#" target="_blank" rel="noopener" download="generated-video.mp4">Download</a>
           </div>
-          <a class="download-button" href="{{ download_url }}" target="_blank" rel="noopener" download="generated-image.jpg">Download</a>
+          <p class="status-line" id="video-status-line">Waiting for OpenRouter...</p>
+          <video class="generated-video hidden" id="generated-video" controls playsinline></video>
         </div>
-        <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
-      {% else %}
-        <div class="empty-state">
-          <div class="empty-icon">✦</div>
-          <h2>Your image will appear here</h2>
-          <p>Generated images are shown on this page and saved temporarily under static/generated.</p>
-        </div>
-      {% endif %}
+      </section>
     </section>
   </main>
 
   <script>
-    const form = document.querySelector('.generator-form');
-    const button = document.getElementById('generate-button');
-    form?.addEventListener('submit', () => {
-      button.disabled = true;
-      button.textContent = 'Generating...';
+    const imageForm = document.querySelector('.image-generator-form');
+    const imageButton = document.getElementById('generate-button');
+    imageForm?.addEventListener('submit', () => {
+      imageButton.disabled = true;
+      imageButton.textContent = 'Generating...';
+    });
+
+    const videoForm = document.getElementById('video-form');
+    const videoButton = document.getElementById('video-generate-button');
+    const videoError = document.getElementById('video-error');
+    const videoEmpty = document.getElementById('video-empty-state');
+    const videoPanel = document.getElementById('video-status-panel');
+    const videoTitle = document.getElementById('video-status-title');
+    const videoLine = document.getElementById('video-status-line');
+    const videoEl = document.getElementById('generated-video');
+    const videoDownload = document.getElementById('video-download');
+
+    const setVideoError = (message) => {
+      videoError.textContent = message;
+      videoError.classList.remove('hidden');
+      videoButton.disabled = false;
+      videoButton.textContent = 'Generate video';
+    };
+
+    const pollVideoJob = async (jobId, attempt = 0) => {
+      const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || 'Video status request failed.');
+      }
+
+      const status = data.status || 'unknown';
+      videoTitle.textContent = status === 'completed' ? 'Your result' : `Status: ${status}`;
+      videoLine.textContent = `OpenRouter job ${jobId}: ${status}`;
+
+      if (status === 'completed') {
+        if (!data.video_url) {
+          throw new Error('Video completed, but OpenRouter did not return a downloadable video URL.');
+        }
+        videoEl.src = data.video_url;
+        videoEl.classList.remove('hidden');
+        videoDownload.href = data.video_url;
+        videoDownload.classList.remove('hidden');
+        videoButton.disabled = false;
+        videoButton.textContent = 'Generate video';
+        return;
+      }
+
+      if (status === 'failed' || status === 'cancelled') {
+        throw new Error(data.error || `Video generation ${status}.`);
+      }
+
+      if (attempt >= 120) {
+        throw new Error('Video generation is still running after 10 minutes. Try again later or check your OpenRouter dashboard.');
+      }
+
+      window.setTimeout(() => pollVideoJob(jobId, attempt + 1).catch((error) => setVideoError(error.message)), 5000);
+    };
+
+    videoForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      videoError.classList.add('hidden');
+      videoError.textContent = '';
+      videoEmpty.classList.add('hidden');
+      videoPanel.classList.remove('hidden');
+      videoEl.classList.add('hidden');
+      videoEl.removeAttribute('src');
+      videoDownload.classList.add('hidden');
+      videoDownload.href = '#';
+      videoTitle.textContent = 'Submitting job...';
+      videoLine.textContent = 'Sending prompt to OpenRouter...';
+      videoButton.disabled = true;
+      videoButton.textContent = 'Generating...';
+
+      const formData = new FormData(videoForm);
+      const payload = {
+        prompt: formData.get('prompt'),
+        aspect_ratio: formData.get('aspect_ratio')
+      };
+
+      try {
+        const response = await fetch('/video/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Video generation request failed.');
+        }
+        if (!data.id) {
+          throw new Error('OpenRouter did not return a video job id.');
+        }
+        videoTitle.textContent = 'Video job submitted';
+        videoLine.textContent = `OpenRouter job ${data.id}: ${data.status || 'pending'}`;
+        window.setTimeout(() => pollVideoJob(data.id).catch((error) => setVideoError(error.message)), 5000);
+      } catch (error) {
+        setVideoError(error.message);
+      }
     });
   </script>
 </body>

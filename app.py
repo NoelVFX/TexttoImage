@@ -3,8 +3,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from flask import Flask, render_template, request, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
+from OpenRouterVideo import (
+    DEFAULT_VIDEO_ASPECT_RATIO,
+    DEFAULT_VIDEO_DURATION,
+    DEFAULT_VIDEO_RESOLUTION,
+    SUPPORTED_VIDEO_ASPECT_RATIOS,
+    OpenRouterVideoError,
+    extract_video_url,
+    get_video_status,
+    submit_video_job,
+)
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,18 +25,27 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 
+def render_index(**overrides):
+    context = {
+        "aspect_ratios": SUPPORTED_ASPECT_RATIOS.keys(),
+        "selected_ratio": "1024x1024",
+        "prompt": "",
+        "image_url": None,
+        "download_url": None,
+        "error": None,
+        "video_aspect_ratios": SUPPORTED_VIDEO_ASPECT_RATIOS,
+        "selected_video_ratio": DEFAULT_VIDEO_ASPECT_RATIO,
+        "video_prompt": "",
+        "video_error": None,
+        "default_video_duration": DEFAULT_VIDEO_DURATION,
+    }
+    context.update(overrides)
+    return render_template("index.html", **context)
+
 
 @app.get("/")
 def index():
-    return render_template(
-        "index.html",
-        aspect_ratios=SUPPORTED_ASPECT_RATIOS.keys(),
-        selected_ratio="1024x1024",
-        prompt="",
-        image_url=None,
-        download_url=None,
-        error=None,
-    )
+    return render_index()
 
 
 @app.post("/generate")
@@ -38,13 +57,9 @@ def generate():
         selected_ratio = "1024x1024"
 
     if not prompt:
-        return render_template(
-            "index.html",
-            aspect_ratios=SUPPORTED_ASPECT_RATIOS.keys(),
+        return render_index(
             selected_ratio=selected_ratio,
             prompt=prompt,
-            image_url=None,
-            download_url=None,
             error="Please enter a prompt before generating an image.",
         ), 400
 
@@ -61,14 +76,64 @@ def generate():
         height=height,
     )
 
-    return render_template(
-        "index.html",
-        aspect_ratios=SUPPORTED_ASPECT_RATIOS.keys(),
+    return render_index(
         selected_ratio=selected_ratio,
         prompt=prompt,
         image_url=image_url,
         download_url=image_url,
-        error=None,
+    )
+
+
+@app.post("/video/start")
+def start_video_generation():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+
+    if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
+        selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
+
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before generating a video."}), 400
+
+    try:
+        job = submit_video_job(
+            prompt,
+            aspect_ratio=selected_ratio,
+            duration=DEFAULT_VIDEO_DURATION,
+            resolution=DEFAULT_VIDEO_RESOLUTION,
+            generate_audio=False,
+        )
+    except (OpenRouterVideoError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    return jsonify(
+        {
+            "id": job.get("id"),
+            "polling_url": job.get("polling_url"),
+            "status": job.get("status", "pending"),
+            "model": "bytedance/seedance-2.0-fast",
+        }
+    ), 202
+
+
+@app.get("/video/status/<path:job_id>")
+def video_generation_status(job_id: str):
+    try:
+        status_payload = get_video_status(job_id)
+    except (OpenRouterVideoError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    status = status_payload.get("status", "unknown")
+    video_url = extract_video_url(status_payload)
+    return jsonify(
+        {
+            "id": status_payload.get("id", job_id),
+            "status": status,
+            "video_url": video_url,
+            "error": status_payload.get("error"),
+            "usage": status_payload.get("usage"),
+        }
     )
 
 
