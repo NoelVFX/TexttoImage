@@ -45,6 +45,8 @@ Optional variables:
 - `VIDEO_ORCHESTRATOR_PROMPT_OPTIMIZER=hermes` - optionally asks Hermes to optimize the text prompt too; default `local`
 - `VIDEO_ORCHESTRATOR_MAX_ATTEMPTS` - number of free-frame review attempts per request; default `1` for web timeout safety
 - `VIDEO_ORCHESTRATOR_REQUIRE_VISION=true` - blocks video generation if the selected visual reviewer is unavailable
+- `HERMES_REVIEW_TIMEOUT` - seconds to wait for Hermes visual review; default `30`
+- `VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT=true` - if Hermes review times out, proceed using the structurally valid free frame instead of blocking paid I2V
 
 ## Run locally
 

@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,7 +102,7 @@ class HermesReviewBackendTests(unittest.TestCase):
         self.assertIn("--image", command)
         image_path = Path(command[command.index("--image") + 1])
         self.assertEqual(image_path.suffix, ".jpg")
-        self.assertEqual(kwargs["timeout"], 12)
+        self.assertEqual(kwargs["timeout"], 30)
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["text"])
 
@@ -127,6 +129,55 @@ class HermesReviewBackendTests(unittest.TestCase):
 
         self.assertFalse(critique.approved)
         self.assertIn("unreadable", critique.reason.lower())
+    def test_critique_storyboard_image_can_approve_structural_frame_when_hermes_times_out_if_enabled(self):
+        from OrchestratedVideo import critique_storyboard_image
+
+        def slow_runner(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 12))
+
+        with patch.dict(os.environ, {"VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT": "true"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="neon cyberpunk city in rain",
+                optimized_prompt="cinematic neon cyberpunk city first frame",
+                aspect_ratio="16:9",
+                reviewer="hermes",
+                runner=slow_runner,
+            )
+
+        self.assertTrue(critique.approved)
+        self.assertLess(critique.confidence, 0.5)
+        self.assertIn("timed out", critique.reason.lower())
+
+    def test_critique_storyboard_image_uses_env_timeout_for_hermes_cli(self):
+        from OrchestratedVideo import critique_storyboard_image
+
+        calls = []
+
+        def fake_runner(command, **kwargs):
+            calls.append((command, kwargs))
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"approved": True, "confidence": 0.8, "reason": "ok", "improvements": []})
+                stderr = ""
+
+            return Result()
+
+        with patch.dict(os.environ, {"HERMES_REVIEW_TIMEOUT": "24"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="neon cyberpunk city in rain",
+                optimized_prompt="cinematic neon cyberpunk city first frame",
+                aspect_ratio="16:9",
+                reviewer="hermes",
+                runner=fake_runner,
+            )
+
+        self.assertTrue(critique.approved)
+        self.assertEqual(calls[0][1]["timeout"], 24)
 
 
 class VideoOrchestrationRouteTests(unittest.TestCase):

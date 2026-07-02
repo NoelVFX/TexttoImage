@@ -17,10 +17,9 @@ from TexttoImage import DEFAULT_MODEL, build_pollinations_url
 
 
 DEFAULT_MAX_FRAME_ATTEMPTS = 1
-# Keep the entire synchronous /video/start path under the common 30-second
-# platform/proxy timeout. If Hermes cannot review quickly, fail with JSON
-# instead of letting Railway/Gunicorn kill the worker and return HTML.
-DEFAULT_HERMES_TIMEOUT = 12
+# Default Hermes visual-review budget. Railway can override this with
+# HERMES_REVIEW_TIMEOUT when balancing strict review vs request latency.
+DEFAULT_HERMES_TIMEOUT = 30
 DEFAULT_HERMES_REVIEW_PROVIDER = "openrouter"
 DEFAULT_HERMES_REVIEW_MODEL = "openai/gpt-4o-mini"
 MIN_IMAGE_BYTES = 2048
@@ -73,6 +72,14 @@ def _load_project_env() -> None:
 def _env_flag(name: str, default: str = "0") -> bool:
     _load_project_env()
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    _load_project_env()
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_text(response: Any) -> str:
@@ -330,9 +337,10 @@ def _critique_with_hermes_cli(
     aspect_ratio: str,
     runner: Callable[..., Any] = subprocess.run,
     temp_dir: Path | None = None,
-    timeout: int = DEFAULT_HERMES_TIMEOUT,
+    timeout: int | None = None,
 ) -> VisionCritique:
     _load_project_env()
+    timeout = timeout if timeout is not None else max(1, _env_int("HERMES_REVIEW_TIMEOUT", DEFAULT_HERMES_TIMEOUT))
     image_path = _temp_image_path(content_type, temp_dir=temp_dir)
     try:
         image_path.write_bytes(image_bytes)
@@ -348,6 +356,25 @@ def _critique_with_hermes_cli(
             model=os.getenv("HERMES_REVIEW_MODEL") or None,
         )
         result = runner(command, text=True, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        if _env_flag("VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT", "0"):
+            return VisionCritique(
+                approved=True,
+                confidence=0.35,
+                reason=(
+                    f"Hermes visual review timed out after {timeout} seconds; proceeding because "
+                    "VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT is enabled and the storyboard passed structural checks."
+                ),
+                improvements=["Use a faster vision-review model or raise HERMES_REVIEW_TIMEOUT for stricter review."],
+                raw_response=str(exc),
+            )
+        return VisionCritique(
+            approved=False,
+            confidence=0.0,
+            reason=f"Hermes visual review timed out after {timeout} seconds, so the paid I2V job was blocked.",
+            improvements=["Set HERMES_REVIEW_TIMEOUT higher, choose a faster review model, or enable VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT."],
+            raw_response=str(exc),
+        )
     except Exception as exc:
         return VisionCritique(
             approved=False,
