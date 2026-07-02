@@ -122,6 +122,25 @@
         </div>
       </section>
     </section>
+
+    <section class="media-section library-section" aria-labelledby="session-library-title">
+      <div class="section-heading library-heading">
+        <div>
+          <p class="eyebrow">This browser session</p>
+          <h2 id="session-library-title">Session media library</h2>
+          <p class="section-copy">Generated images and completed videos are saved here for this tab, so new generations do not erase your previous results.</p>
+        </div>
+        <button type="button" class="secondary-button" id="clear-session-library">Clear library</button>
+      </div>
+      <section class="card result-card session-library-card">
+        <div class="empty-state" id="session-library-empty">
+          <div class="empty-icon">▦</div>
+          <h2>No saved media yet</h2>
+          <p>Your generated images and completed videos will appear here during this browser session.</p>
+        </div>
+        <div class="session-library-grid hidden" id="session-library-grid"></div>
+      </section>
+    </section>
   </main>
 
   <script>
@@ -143,6 +162,17 @@
     const videoDownload = document.getElementById('video-download');
     const startFramePreview = document.getElementById('start-frame-preview');
     const startFrameImage = document.getElementById('start-frame-image');
+    const libraryGrid = document.getElementById('session-library-grid');
+    const libraryEmpty = document.getElementById('session-library-empty');
+    const clearLibraryButton = document.getElementById('clear-session-library');
+    const sessionLibraryKey = 'tti-session-media-library';
+    const serverGeneratedImage = {
+      type: 'image',
+      url: {{ image_url|tojson }},
+      downloadUrl: {{ download_url|tojson }},
+      prompt: {{ prompt|tojson }},
+      createdAt: Date.now()
+    };
 
     const setVideoError = (message) => {
       videoError.textContent = message;
@@ -161,7 +191,84 @@
       }
     };
 
-    const pollVideoJob = async (jobId, attempt = 0) => {
+    const readLibraryItems = () => {
+      try {
+        const parsed = JSON.parse(sessionStorage.getItem(sessionLibraryKey) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        return [];
+      }
+    };
+
+    const writeLibraryItems = (items) => {
+      sessionStorage.setItem(sessionLibraryKey, JSON.stringify(items.slice(0, 24)));
+    };
+
+    const renderLibrary = () => {
+      const items = readLibraryItems();
+      libraryGrid.innerHTML = '';
+      libraryGrid.classList.toggle('hidden', items.length === 0);
+      libraryEmpty.classList.toggle('hidden', items.length > 0);
+
+      items.forEach((item) => {
+        const card = document.createElement('article');
+        card.className = 'library-item';
+
+        const mediaWrap = document.createElement('div');
+        mediaWrap.className = 'library-media';
+        if (item.type === 'video') {
+          const video = document.createElement('video');
+          video.src = item.url;
+          video.controls = true;
+          video.playsInline = true;
+          mediaWrap.appendChild(video);
+        } else {
+          const image = document.createElement('img');
+          image.src = item.url;
+          image.alt = item.prompt || 'Generated image';
+          mediaWrap.appendChild(image);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'library-meta';
+        const title = document.createElement('strong');
+        title.textContent = item.type === 'video' ? 'Video' : 'Image';
+        const promptText = document.createElement('p');
+        promptText.textContent = item.prompt || 'Untitled prompt';
+        const actions = document.createElement('div');
+        actions.className = 'library-actions';
+        const openLink = document.createElement('a');
+        openLink.href = item.downloadUrl || item.url;
+        openLink.target = '_blank';
+        openLink.rel = 'noopener';
+        openLink.textContent = 'Open';
+        actions.appendChild(openLink);
+        meta.append(title, promptText, actions);
+        card.append(mediaWrap, meta);
+        libraryGrid.appendChild(card);
+      });
+    };
+
+    const addLibraryItem = (item) => {
+      if (!item.url) return;
+      const items = readLibraryItems();
+      const key = `${item.type}:${item.url}`;
+      const filtered = items.filter((existing) => `${existing.type}:${existing.url}` !== key);
+      writeLibraryItems([{ ...item, createdAt: item.createdAt || Date.now() }, ...filtered]);
+      renderLibrary();
+    };
+
+    clearLibraryButton?.addEventListener('click', () => {
+      sessionStorage.removeItem(sessionLibraryKey);
+      renderLibrary();
+    });
+
+    if (serverGeneratedImage.url) {
+      addLibraryItem(serverGeneratedImage);
+    }
+    renderLibrary();
+
+    const pollVideoJob = async (jobId, attempt = 0, prompt = '') => {
       const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
       const data = await parseJsonResponse(response, 'Video status request failed.');
 
@@ -182,6 +289,13 @@
         videoEl.classList.remove('hidden');
         videoDownload.href = data.video_url;
         videoDownload.classList.remove('hidden');
+        addLibraryItem({
+          type: 'video',
+          url: data.video_url,
+          downloadUrl: data.video_url,
+          prompt,
+          createdAt: Date.now()
+        });
         videoButton.disabled = false;
         videoButton.textContent = 'Generate video';
         return;
@@ -195,7 +309,7 @@
         throw new Error('Video generation is still running after 10 minutes. Try again later or check your OpenRouter dashboard.');
       }
 
-      window.setTimeout(() => pollVideoJob(jobId, attempt + 1).catch((error) => setVideoError(error.message)), 5000);
+      window.setTimeout(() => pollVideoJob(jobId, attempt + 1, prompt).catch((error) => setVideoError(error.message)), 5000);
     };
 
     videoForm?.addEventListener('submit', async (event) => {
@@ -242,7 +356,7 @@
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';
         videoLine.textContent = `Vision Agent approved free frame${confidence}; OpenRouter I2V job ${data.id}: ${data.status || 'pending'}`;
-        window.setTimeout(() => pollVideoJob(data.id).catch((error) => setVideoError(error.message)), 5000);
+        window.setTimeout(() => pollVideoJob(data.id, 0, payload.prompt || '').catch((error) => setVideoError(error.message)), 5000);
       } catch (error) {
         setVideoError(error.message);
       }

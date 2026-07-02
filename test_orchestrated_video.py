@@ -190,6 +190,15 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Generate images and videos from prompts", response.data)
 
+    def test_index_includes_session_media_library(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Session media library", response.data)
+        self.assertIn(b"session-library-grid", response.data)
+        self.assertIn(b"sessionStorage", response.data)
+        self.assertIn(b"addLibraryItem", response.data)
+
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_does_not_submit_paid_i2v_when_vision_rejects(
