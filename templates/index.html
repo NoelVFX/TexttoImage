@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Text to Image Generator</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page-shell">
+    <section class="hero">
+      <p class="eyebrow">Pollinations text-to-image</p>
+      <h1>Generate an image from a prompt</h1>
+      <p class="subtitle">Type a prompt, choose square or widescreen, then download the generated result.</p>
+    </section>
+
+    <section class="card app-card">
+      <form class="generator-form" method="post" action="{{ url_for('generate') }}">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" name="prompt" rows="5" placeholder="A cinematic photo of a glass greenhouse on Mars at sunset" required>{{ prompt }}</textarea>
+
+        <fieldset>
+          <legend>Aspect ratio</legend>
+          <div class="ratio-grid">
+            {% for ratio in aspect_ratios %}
+              <label class="ratio-option {% if ratio == selected_ratio %}selected{% endif %}">
+                <input type="radio" name="aspect_ratio" value="{{ ratio }}" {% if ratio == selected_ratio %}checked{% endif %}>
+                <span>{{ ratio }}</span>
+                <small>{% if ratio == '1024x1024' %}1:1 square{% else %}16:9 widescreen{% endif %}</small>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+
+        <button type="submit" id="generate-button">Generate image</button>
+      </form>
+
+      {% if error %}
+        <div class="alert" role="alert">{{ error }}</div>
+      {% endif %}
+    </section>
+
+    <section class="card result-card">
+      {% if image_url %}
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">Generated image</p>
+            <h2>Your result</h2>
+          </div>
+          <a class="download-button" href="{{ download_url }}">Download</a>
+        </div>
+        <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-icon">✦</div>
+          <h2>Your image will appear here</h2>
+          <p>Generated images are shown on this page and saved temporarily under static/generated.</p>
+        </div>
+      {% endif %}
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector('.generator-form');
+    const button = document.getElementById('generate-button');
+    form?.addEventListener('submit', () => {
+      button.disabled = true;
+      button.textContent = 'Generating...';
+    });
+  </script>
+</body>
+</html>

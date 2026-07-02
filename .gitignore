@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+node_modules/
+package.json
+package-lock.json
+static/generated/*
+!static/generated/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
+output.jpg
+workspace_render.jpg
