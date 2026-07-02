@@ -222,6 +222,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["id"], "job_123")
         self.assertEqual(payload["start_frame_url"], "https://image.pollinations.ai/p/approved-frame?seed=7")
         self.assertEqual(payload["optimized_prompt"], "A crisp 2D game UI asset with shiny gold coins")
+        self.assertEqual(payload["model"], "alibaba/wan-2.6")
         self.assertEqual(payload["vision_critique"]["approved"], True)
         self.assertEqual(payload["workflow"], "pollinations-vision-gated-start-frame-to-openrouter-i2v")
         mock_submit.assert_called_once()

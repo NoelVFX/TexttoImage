@@ -69,8 +69,8 @@
     <section class="media-section video-section">
       <div class="section-heading">
         <p class="eyebrow">OpenRouter video generation</p>
-        <h2>Generate a Seedance 2.0 Fast video</h2>
-        <p class="section-copy">Cost-saving workflow: first creates a free Pollinations still image, asks Hermes Agent's Vision Agent to compare that frame against your prompt, and only sends approved frames into OpenRouter I2V model <code>bytedance/seedance-2.0-fast</code>. Set <code>OPENROUTER_API_KEY</code> before generating videos; make sure the local <code>hermes</code> CLI is configured with a vision-capable model.</p>
+        <h2>Generate a Wan 2.6 video</h2>
+        <p class="section-copy">Cost-saving workflow: first creates a free Pollinations still image, asks Hermes Agent's Vision Agent to compare that frame against your prompt, and only sends approved frames into OpenRouter I2V model <code>alibaba/wan-2.6</code>. Set <code>OPENROUTER_API_KEY</code> before generating videos; make sure the local <code>hermes</code> CLI is configured with a vision-capable model.</p>
       </div>
 
       <section class="card app-card">
@@ -91,7 +91,7 @@
             </div>
           </fieldset>
 
-          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent approves prompt match and visual structure, then Seedance 2.0 Fast animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
+          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent approves prompt match and visual structure, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
           <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 

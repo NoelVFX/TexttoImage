@@ -16,10 +16,10 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
   2. Build a free static first frame with Pollinations using a deterministic seed
   3. The Vision Agent reviews that exact free frame against the original prompt and rejects off-prompt, stretched, warped, or broken images
   4. Only after approval, pass that image URL into OpenRouter as `frame_images[0]` / `first_frame`
-  5. Animate it with OpenRouter model `bytedance/seedance-2.0-fast`
+  5. Animate it with OpenRouter model `alibaba/wan-2.6`
 - Video aspect ratio selector:
-  - `1:1` square
   - `16:9` widescreen
+  - `9:16` vertical
 - Async video job polling, video preview, and video download link on the same page
 
 ## Environment
@@ -84,7 +84,7 @@ git push -u origin main
 - `app.py` - Flask routes and web UI/API integration
 - `TexttoImage.py` - Pollinations image generation helper
 - `OrchestratedVideo.py` - Hermes prompt optimizer, free-frame generation, Vision Agent gate, and retry/blocking logic
-- `OpenRouterVideo.py` - OpenRouter Seedance 2.0 Fast video generation helper
+- `OpenRouterVideo.py` - OpenRouter Wan 2.6 video generation helper
 - `templates/index.html` - Web page template
 - `static/styles.css` - Styling
 - `static/generated/` - Runtime generated images, ignored by git

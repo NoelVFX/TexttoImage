@@ -8,10 +8,10 @@ import requests
 
 
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
-OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0-fast"
+OPENROUTER_VIDEO_MODEL = "alibaba/wan-2.6"
 SUPPORTED_VIDEO_ASPECT_RATIOS = {
-    "1:1": "1:1 square",
     "16:9": "16:9 widescreen",
+    "9:16": "9:16 vertical",
 }
 DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
 DEFAULT_VIDEO_RESOLUTION = "720p"
@@ -85,7 +85,7 @@ def submit_video_job(
     first_frame_url: str | None = None,
     timeout: int = 30,
 ) -> Dict[str, Any]:
-    """Submit a Seedance 2.0 Fast video job to OpenRouter.
+    """Submit a Wan 2.6 video job to OpenRouter.
 
     When first_frame_url is provided, OpenRouter treats the request as
     image-to-video (I2V). The app uses a free Pollinations image URL for that

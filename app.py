@@ -10,6 +10,7 @@ from OpenRouterVideo import (
     DEFAULT_VIDEO_DURATION,
     DEFAULT_VIDEO_RESOLUTION,
     SUPPORTED_VIDEO_ASPECT_RATIOS,
+    OPENROUTER_VIDEO_MODEL,
     OpenRouterVideoError,
     extract_video_url,
     get_video_status,
@@ -26,8 +27,8 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 VIDEO_START_FRAME_SIZES = {
-    "1:1": (720, 720),
     "16:9": (1280, 720),
+    "9:16": (720, 1280),
 }
 
 
@@ -158,7 +159,7 @@ def start_video_generation():
             "id": job.get("id"),
             "polling_url": job.get("polling_url"),
             "status": job.get("status", "pending"),
-            "model": "bytedance/seedance-2.0-fast",
+            "model": OPENROUTER_VIDEO_MODEL,
             "start_frame_url": first_frame.start_frame_url,
             "optimized_prompt": first_frame.optimized_prompt,
             "vision_critique": first_frame.critique.to_dict(),
