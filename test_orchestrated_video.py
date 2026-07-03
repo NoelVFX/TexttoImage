@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app
 from TexttoImage import build_pollinations_url
@@ -17,6 +17,40 @@ class PollinationsUrlTests(unittest.TestCase):
         self.assertIn("seed=12345", url)
         self.assertIn("width=720", url)
         self.assertIn("height=720", url)
+
+    def test_build_pollinations_url_includes_token_when_configured(self):
+        with patch.dict(os.environ, {"POLLINATIONS_TOKEN": "token_123"}, clear=False):
+            url = build_pollinations_url("gold coins", width=720, height=720, seed=12345)
+
+        self.assertIn("token=token_123", url)
+
+    @patch("TexttoImage.requests.get")
+    def test_generate_pollinations_image_bytes_retries_fallback_model_after_queue_message(self, mock_get):
+        from TexttoImage import generate_pollinations_image_bytes
+
+        queued = Mock()
+        queued.status_code = 429
+        queued.headers = {"content-type": "text/plain"}
+        queued.text = "Too many requests, 1 request queued. Get unlimited access at https://auth.pollinations.ai"
+        image = Mock()
+        image.status_code = 200
+        image.headers = {"content-type": "image/jpeg"}
+        image.content = b"fake image bytes"
+        image.text = ""
+        mock_get.side_effect = [queued, image]
+
+        with patch.dict(os.environ, {"POLLINATIONS_TOKEN": ""}, clear=False):
+            content, content_type = generate_pollinations_image_bytes(
+                "gold coins",
+                model_choice="gpt-image-large",
+                width=720,
+                height=720,
+            )
+
+        self.assertEqual(content, b"fake image bytes")
+        self.assertEqual(content_type, "image/jpeg")
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertIn("model=turbo", mock_get.call_args_list[1].args[0])
 
 
 class HermesReviewBackendTests(unittest.TestCase):
@@ -106,7 +140,7 @@ class HermesReviewBackendTests(unittest.TestCase):
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["text"])
 
-    def test_critique_storyboard_image_blocks_when_hermes_returns_invalid_json(self):
+    def test_critique_storyboard_image_soft_approves_when_hermes_returns_invalid_json(self):
         from OrchestratedVideo import critique_storyboard_image
 
         def fake_runner(_command, **_kwargs):
@@ -117,18 +151,108 @@ class HermesReviewBackendTests(unittest.TestCase):
 
             return Result()
 
-        critique = critique_storyboard_image(
-            b"\xff\xd8" + b"x" * 4096,
-            "image/jpeg",
-            user_intent="shiny gold coins",
-            optimized_prompt="crisp shiny gold coin game UI",
-            aspect_ratio="1:1",
-            reviewer="hermes",
-            runner=fake_runner,
-        )
+        with patch.dict(os.environ, {"VIDEO_ORCHESTRATOR_STRICT_REVIEW": "false", "VIDEO_ORCHESTRATOR_SOFT_REVIEW_FAILURES": "true"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="shiny gold coins",
+                optimized_prompt="crisp shiny gold coin game UI",
+                aspect_ratio="1:1",
+                reviewer="hermes",
+                runner=fake_runner,
+            )
+
+        self.assertTrue(critique.approved)
+        self.assertIn("unreadable", critique.reason.lower())
+
+    def test_critique_storyboard_image_blocks_invalid_json_when_strict_review_enabled(self):
+        from OrchestratedVideo import critique_storyboard_image
+
+        def fake_runner(_command, **_kwargs):
+            class Result:
+                returncode = 0
+                stdout = "I think it looks fine, but this is not JSON."
+                stderr = ""
+
+            return Result()
+
+        with patch.dict(os.environ, {"VIDEO_ORCHESTRATOR_STRICT_REVIEW": "true"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="shiny gold coins",
+                optimized_prompt="crisp shiny gold coin game UI",
+                aspect_ratio="1:1",
+                reviewer="hermes",
+                runner=fake_runner,
+            )
 
         self.assertFalse(critique.approved)
-        self.assertIn("unreadable", critique.reason.lower())
+        self.assertIn("strict review", critique.reason.lower())
+
+    def test_critique_storyboard_image_soft_approves_low_confidence_rejection(self):
+        from OrchestratedVideo import critique_storyboard_image
+
+        def fake_runner(_command, **_kwargs):
+            class Result:
+                returncode = 0
+                stdout = json.dumps(
+                    {
+                        "approved": False,
+                        "confidence": 0.42,
+                        "reason": "Minor style mismatch but main subject is present.",
+                        "improvements": ["Make it shinier"],
+                    }
+                )
+                stderr = ""
+
+            return Result()
+
+        with patch.dict(os.environ, {"VIDEO_ORCHESTRATOR_STRICT_REVIEW": "false", "VIDEO_ORCHESTRATOR_REJECTION_CONFIDENCE_THRESHOLD": "0.85"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="shiny gold coins",
+                optimized_prompt="crisp shiny gold coin game UI",
+                aspect_ratio="1:1",
+                reviewer="hermes",
+                runner=fake_runner,
+            )
+
+        self.assertTrue(critique.approved)
+        self.assertIn("low-confidence", critique.reason.lower())
+
+    def test_critique_storyboard_image_blocks_high_confidence_rejection(self):
+        from OrchestratedVideo import critique_storyboard_image
+
+        def fake_runner(_command, **_kwargs):
+            class Result:
+                returncode = 0
+                stdout = json.dumps(
+                    {
+                        "approved": False,
+                        "confidence": 0.95,
+                        "reason": "Wrong main subject and blank frame.",
+                        "improvements": ["Regenerate frame"],
+                    }
+                )
+                stderr = ""
+
+            return Result()
+
+        with patch.dict(os.environ, {"VIDEO_ORCHESTRATOR_STRICT_REVIEW": "false", "VIDEO_ORCHESTRATOR_REJECTION_CONFIDENCE_THRESHOLD": "0.85"}, clear=False):
+            critique = critique_storyboard_image(
+                b"\xff\xd8" + b"x" * 4096,
+                "image/jpeg",
+                user_intent="shiny gold coins",
+                optimized_prompt="crisp shiny gold coin game UI",
+                aspect_ratio="1:1",
+                reviewer="hermes",
+                runner=fake_runner,
+            )
+
+        self.assertFalse(critique.approved)
+        self.assertIn("wrong main subject", critique.reason.lower())
     def test_critique_storyboard_image_can_approve_structural_frame_when_hermes_times_out_if_enabled(self):
         from OrchestratedVideo import critique_storyboard_image
 

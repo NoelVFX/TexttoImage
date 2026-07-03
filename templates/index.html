@@ -70,7 +70,7 @@
       <div class="section-heading">
         <p class="eyebrow">OpenRouter video generation</p>
         <h2>Generate a Wan 2.6 video</h2>
-        <p class="section-copy">Cost-saving workflow: first creates a free Pollinations still image, asks Hermes Agent's Vision Agent to compare that frame against your prompt, and only sends approved frames into OpenRouter I2V model <code>alibaba/wan-2.6</code>. Set <code>OPENROUTER_API_KEY</code> before generating videos; make sure the local <code>hermes</code> CLI is configured with a vision-capable model.</p>
+        <p class="section-copy">Cost-saving workflow: first creates a free Pollinations still image, asks Hermes Agent's Vision Agent to compare that frame against your prompt with a permissive soft gate, and sends usable frames into OpenRouter I2V model <code>alibaba/wan-2.6</code>. Set <code>OPENROUTER_API_KEY</code> before generating videos; set <code>POLLINATIONS_TOKEN</code> if the free image service shows queue/rate-limit messages.</p>
       </div>
 
       <section class="card app-card">
@@ -91,7 +91,7 @@
             </div>
           </fieldset>
 
-          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent approves prompt match and visual structure, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
+          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent blocks only severe high-confidence issues, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
           <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 
@@ -325,7 +325,7 @@
       videoDownload.classList.add('hidden');
       videoDownload.href = '#';
       videoTitle.textContent = 'Building and reviewing free start frame...';
-      videoLine.textContent = 'Preparing your prompt, generating a free frame, and running Hermes Agent visual review before any paid I2V call...';
+      videoLine.textContent = 'Preparing your prompt, generating a free frame, and running permissive Hermes Agent visual review before the paid I2V call...';
       videoButton.disabled = true;
       videoButton.textContent = 'Generating...';
 
@@ -355,7 +355,7 @@
         videoTitle.textContent = 'Vision-approved I2V job submitted';
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';
-        videoLine.textContent = `Vision Agent approved free frame${confidence}; OpenRouter I2V job ${data.id}: ${data.status || 'pending'}`;
+        videoLine.textContent = `Vision Agent accepted free frame${confidence}; OpenRouter I2V job ${data.id}: ${data.status || 'pending'}`;
         window.setTimeout(() => pollVideoJob(data.id, 0, payload.prompt || '').catch((error) => setVideoError(error.message)), 5000);
       } catch (error) {
         setVideoError(error.message);

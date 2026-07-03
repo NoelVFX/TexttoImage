@@ -14,7 +14,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Cost-saving video workflow:
   1. Hermes optimizes the user's prompt for a stable first-frame composition
   2. Build a free static first frame with Pollinations using a deterministic seed
-  3. The Vision Agent reviews that exact free frame against the original prompt and rejects off-prompt, stretched, warped, or broken images
+  3. The Vision Agent reviews that exact free frame with a permissive soft gate, blocking only high-confidence severe problems
   4. Only after approval, pass that image URL into OpenRouter as `frame_images[0]` / `first_frame`
   5. Animate it with OpenRouter model `alibaba/wan-2.6`
 - Video aspect ratio selector:
@@ -39,12 +39,18 @@ Optional variables:
 
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
+- `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
+- `POLLINATIONS_FALLBACK_MODELS` - comma-separated fallback image models if Pollinations queues/rate-limits the preferred first-frame model; defaults to `turbo,gpt-image-large`
+- `POLLINATIONS_TOKEN` - token from https://auth.pollinations.ai for higher Pollinations limits
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`
 - `HERMES_REVIEW_PROVIDER` and `HERMES_REVIEW_MODEL` - provider/model override for the Hermes review subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`
 - `VIDEO_ORCHESTRATOR_PROMPT_OPTIMIZER=hermes` - optionally asks Hermes to optimize the text prompt too; default `local`
 - `VIDEO_ORCHESTRATOR_MAX_ATTEMPTS` - number of free-frame review attempts per request; default `1` for web timeout safety
 - `VIDEO_ORCHESTRATOR_REQUIRE_VISION=true` - blocks video generation if the selected visual reviewer is unavailable
+- `VIDEO_ORCHESTRATOR_SOFT_REVIEW_FAILURES=true` - default soft gate: continue when Hermes returns unreadable JSON, exits nonzero, times out, or produces a low-confidence rejection
+- `VIDEO_ORCHESTRATOR_REJECTION_CONFIDENCE_THRESHOLD=0.85` - low-confidence rejections below this threshold are approved in soft mode
+- `VIDEO_ORCHESTRATOR_STRICT_REVIEW=true` - opt back into strict block-on-any-review-failure behavior
 - `HERMES_REVIEW_TIMEOUT` - seconds to wait for Hermes visual review; default `30`
 - `VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT=true` - if Hermes review times out, proceed using the structurally valid free frame instead of blocking paid I2V
 

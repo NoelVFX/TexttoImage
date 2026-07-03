@@ -13,7 +13,7 @@ from typing import Any, Callable
 import requests
 
 from OpenRouterVideo import load_local_env
-from TexttoImage import DEFAULT_MODEL, build_pollinations_url
+from TexttoImage import DEFAULT_FALLBACK_MODELS, DEFAULT_MODEL, build_pollinations_url
 
 
 DEFAULT_MAX_FRAME_ATTEMPTS = 1
@@ -22,6 +22,7 @@ DEFAULT_MAX_FRAME_ATTEMPTS = 1
 DEFAULT_HERMES_TIMEOUT = 30
 DEFAULT_HERMES_REVIEW_PROVIDER = "openrouter"
 DEFAULT_HERMES_REVIEW_MODEL = "openai/gpt-4o-mini"
+DEFAULT_REJECTION_CONFIDENCE_THRESHOLD = 0.85
 MIN_IMAGE_BYTES = 2048
 IMAGE_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -82,6 +83,22 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    _load_project_env()
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _strict_review_enabled() -> bool:
+    return _env_flag("VIDEO_ORCHESTRATOR_STRICT_REVIEW", "0")
+
+
+def _soft_review_failures_enabled() -> bool:
+    return _env_flag("VIDEO_ORCHESTRATOR_SOFT_REVIEW_FAILURES", "1") and not _strict_review_enabled()
+
+
 def _extract_text(response: Any) -> str:
     text = getattr(response, "stdout", None)
     if text:
@@ -130,10 +147,19 @@ def _normalise_improvements(value: Any) -> list[str]:
 def _critique_from_json(raw: str) -> VisionCritique:
     parsed = _parse_json_object(raw)
     if not parsed:
+        reason = "Vision Agent returned an unreadable critique."
+        if _soft_review_failures_enabled():
+            return VisionCritique(
+                approved=True,
+                confidence=0.25,
+                reason=f"{reason} Soft review mode approved the structurally valid storyboard instead of blocking I2V.",
+                improvements=["For stricter blocking, set VIDEO_ORCHESTRATOR_STRICT_REVIEW=true."],
+                raw_response=raw,
+            )
         return VisionCritique(
             approved=False,
             confidence=0.0,
-            reason="Vision Agent returned an unreadable critique, so the paid I2V job was blocked.",
+            reason=f"{reason} The paid I2V job was blocked because strict review is enabled.",
             improvements=["Retry the Hermes visual review and require strict JSON output."],
             raw_response=raw,
         )
@@ -144,25 +170,57 @@ def _critique_from_json(raw: str) -> VisionCritique:
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
-    return VisionCritique(
+    critique = VisionCritique(
         approved=bool(parsed.get("approved")),
         confidence=confidence,
         reason=str(parsed.get("reason") or "No reason supplied."),
         improvements=_normalise_improvements(parsed.get("improvements")),
         raw_response=raw,
     )
+    return _apply_soft_review_policy(critique)
+
+
+def _apply_soft_review_policy(critique: VisionCritique) -> VisionCritique:
+    """Keep the review useful without letting low-confidence nitpicks block every I2V request."""
+    if critique.approved or _strict_review_enabled():
+        return critique
+
+    threshold = max(
+        0.0,
+        min(
+            1.0,
+            _env_float("VIDEO_ORCHESTRATOR_REJECTION_CONFIDENCE_THRESHOLD", DEFAULT_REJECTION_CONFIDENCE_THRESHOLD),
+        ),
+    )
+    if critique.confidence >= threshold:
+        return critique
+
+    return VisionCritique(
+        approved=True,
+        confidence=critique.confidence,
+        reason=(
+            "Soft review mode approved a low-confidence Vision Agent rejection "
+            f"({critique.confidence:.2f} < {threshold:.2f}): {critique.reason}"
+        ),
+        improvements=critique.improvements,
+        raw_response=critique.raw_response,
+    )
 
 
 def build_hermes_review_prompt(*, user_intent: str, optimized_prompt: str, aspect_ratio: str) -> str:
     return f"""
-You are the Vision Agent gatekeeper for a cost-saving image-to-video pipeline.
-Compare the attached storyboard image to the user's requested video. Decide if this exact image is safe to send to a paid I2V API.
+You are the Vision Agent reviewer for a cost-saving image-to-video pipeline.
+Compare the attached storyboard image to the user's requested video. Decide if this exact image is usable as a first frame for a paid I2V API.
 
 User intent: {user_intent}
 Storyboard prompt: {optimized_prompt}
 Target aspect ratio: {aspect_ratio}
 
-Reject if the image is off-prompt, visibly stretched, warped, horizontally smeared, has broken UI/game asset geometry, wrong subject, unreadable composition, malformed anatomy/objects, or would disappoint a reasonable user.
+Use a permissive approve-by-default policy. Approve when the main subject and composition are recognizable enough for animation, even if there are minor style differences, small prompt omissions, or ordinary AI-image imperfections.
+
+Reject only for severe, objective problems: wrong main subject, non-image/blank frame, unreadable or heavily smeared composition, gross stretching/warping, badly malformed main anatomy/objects, or broken UI/game asset geometry that would make the video unusable.
+
+If you are unsure, approve with lower confidence and list improvements instead of blocking the I2V job.
 
 Return compact JSON only with this exact schema and no markdown:
 {{"approved": true/false, "confidence": 0.0-1.0, "reason": "short reason", "improvements": ["fix 1", "fix 2"]}}
@@ -357,13 +415,13 @@ def _critique_with_hermes_cli(
         )
         result = runner(command, text=True, capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
-        if _env_flag("VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT", "0"):
+        if _env_flag("VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT", "0") or _soft_review_failures_enabled():
             return VisionCritique(
                 approved=True,
                 confidence=0.35,
                 reason=(
                     f"Hermes visual review timed out after {timeout} seconds; proceeding because "
-                    "VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT is enabled and the storyboard passed structural checks."
+                    "soft review mode is enabled and the storyboard passed structural checks."
                 ),
                 improvements=["Use a faster vision-review model or raise HERMES_REVIEW_TIMEOUT for stricter review."],
                 raw_response=str(exc),
@@ -372,10 +430,21 @@ def _critique_with_hermes_cli(
             approved=False,
             confidence=0.0,
             reason=f"Hermes visual review timed out after {timeout} seconds, so the paid I2V job was blocked.",
-            improvements=["Set HERMES_REVIEW_TIMEOUT higher, choose a faster review model, or enable VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT."],
+            improvements=["Set HERMES_REVIEW_TIMEOUT higher, choose a faster review model, enable VIDEO_ORCHESTRATOR_SOFT_REVIEW_FAILURES, or enable VIDEO_ORCHESTRATOR_ALLOW_REVIEW_TIMEOUT."],
             raw_response=str(exc),
         )
     except Exception as exc:
+        if _soft_review_failures_enabled():
+            return VisionCritique(
+                approved=True,
+                confidence=0.25,
+                reason=(
+                    f"Hermes visual review failed ({exc}); soft review mode approved the "
+                    "structurally valid storyboard instead of blocking I2V."
+                ),
+                improvements=["Check that the hermes CLI is installed and configured with a vision-capable model."],
+                raw_response="",
+            )
         return VisionCritique(
             approved=False,
             confidence=0.0,
@@ -393,6 +462,17 @@ def _critique_with_hermes_cli(
     stderr = getattr(result, "stderr", "") or ""
     raw = stdout.strip() or stderr.strip()
     if getattr(result, "returncode", 1) != 0:
+        if _soft_review_failures_enabled():
+            return VisionCritique(
+                approved=True,
+                confidence=0.25,
+                reason=(
+                    f"Hermes visual review exited with code {getattr(result, 'returncode', 'unknown')}; "
+                    "soft review mode approved the structurally valid storyboard instead of blocking I2V."
+                ),
+                improvements=["Check Hermes model/provider configuration and ensure the selected model supports image input."],
+                raw_response=raw,
+            )
         return VisionCritique(
             approved=False,
             confidence=0.0,
@@ -443,11 +523,36 @@ def critique_storyboard_image(
     return _fallback_structural_critique(image_bytes, content_type)
 
 
+def _storyboard_model_choices(preferred: str) -> list[str]:
+    fallback_models = [item.strip() for item in DEFAULT_FALLBACK_MODELS.split(",") if item.strip()]
+    choices: list[str] = []
+    for model in [preferred, *fallback_models]:
+        if model and model not in choices:
+            choices.append(model)
+    return choices or [preferred]
+
+
 def download_storyboard_bytes(url: str, *, timeout: int = 8) -> tuple[bytes, str]:
     response = requests.get(url, timeout=timeout)
     content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
+    body_preview = response.text[:300] if response.status_code != 200 or not content_type.startswith("image/") else ""
+    normalized = body_preview.lower()
+    if (
+        response.status_code in {401, 402, 403, 408, 409, 425, 429, 503}
+        or "too many requests" in normalized
+        or "request queued" in normalized
+        or "auth.pollinations.ai" in normalized
+    ):
+        raise VideoOrchestrationError(
+            "Pollinations is rate-limiting or queueing the free storyboard frame. "
+            "This usually happens with public GPT image models. Set POLLINATIONS_TOKEN from "
+            "https://auth.pollinations.ai for higher limits, or set POLLINATIONS_MODEL=flux/turbo. "
+            f"Response: {body_preview}"
+        )
     if response.status_code != 200:
-        raise VideoOrchestrationError(f"Storyboard image service returned HTTP {response.status_code}: {response.text[:300]}")
+        raise VideoOrchestrationError(f"Storyboard image service returned HTTP {response.status_code}: {body_preview}")
+    if not content_type.startswith("image/"):
+        raise VideoOrchestrationError(f"Storyboard image service returned non-image content ({content_type}): {body_preview}")
     return response.content, content_type
 
 
@@ -478,35 +583,48 @@ def orchestrate_video_first_frame(
     last_critique: VisionCritique | None = None
 
     for attempt in range(1, max_attempts + 1):
-        seed = stable_seed(f"{optimized_prompt}|{aspect_ratio}|{attempt}")
-        start_frame_url = build_pollinations_url(
-            optimized_prompt,
-            model_choice=model_choice,
-            width=width,
-            height=height,
-            seed=seed,
-        )
-        image_bytes, content_type = downloader(start_frame_url)
-        critique = vision_critic(
-            image_bytes,
-            content_type,
-            user_intent=user_prompt,
-            optimized_prompt=optimized_prompt,
-            aspect_ratio=aspect_ratio,
-        )
-        last_critique = critique
-        if critique.approved:
-            return FirstFrameResult(
-                original_prompt=user_prompt,
-                optimized_prompt=optimized_prompt,
-                start_frame_url=start_frame_url,
-                critique=critique,
-                attempts=attempt,
+        last_download_error: VideoOrchestrationError | None = None
+        for storyboard_model in _storyboard_model_choices(model_choice):
+            seed = stable_seed(f"{optimized_prompt}|{aspect_ratio}|{attempt}|{storyboard_model}")
+            start_frame_url = build_pollinations_url(
+                optimized_prompt,
+                model_choice=storyboard_model,
                 width=width,
                 height=height,
                 seed=seed,
             )
-        optimized_prompt = _build_revision_prompt(optimized_prompt, critique)
+            try:
+                image_bytes, content_type = downloader(start_frame_url)
+            except VideoOrchestrationError as exc:
+                message = str(exc).lower()
+                if "rate-limiting" in message or "queueing" in message or "too many requests" in message:
+                    last_download_error = exc
+                    continue
+                raise
+            critique = vision_critic(
+                image_bytes,
+                content_type,
+                user_intent=user_prompt,
+                optimized_prompt=optimized_prompt,
+                aspect_ratio=aspect_ratio,
+            )
+            last_critique = critique
+            if critique.approved:
+                return FirstFrameResult(
+                    original_prompt=user_prompt,
+                    optimized_prompt=optimized_prompt,
+                    start_frame_url=start_frame_url,
+                    critique=critique,
+                    attempts=attempt,
+                    width=width,
+                    height=height,
+                    seed=seed,
+                )
+            optimized_prompt = _build_revision_prompt(optimized_prompt, critique)
+            break
+        else:
+            if last_download_error:
+                raise last_download_error
 
     reason = last_critique.reason if last_critique else "No critique returned."
     raise VideoOrchestrationError(f"Vision Agent rejected the free storyboard frame: {reason}")
