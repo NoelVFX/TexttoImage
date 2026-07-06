@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
-from ImageEdit import ImageEditError, build_masked_region_edit
+from ImageEdit import ImageEditError, build_masked_region_edit, composite_masked_patch
 from OpenRouterVideo import (
     DEFAULT_VIDEO_ASPECT_RATIO,
     DEFAULT_VIDEO_DURATION,
@@ -52,6 +52,35 @@ STORYBOARD_IMAGE_EXTENSIONS = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+
+
+def stable_generation_seed(prompt: str, aspect_ratio: str) -> int:
+    digest = hashlib.sha256(f"{aspect_ratio}|{prompt.strip()}".encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)
+
+
+def download_image_bytes(image_url: str, *, timeout: int = 45) -> tuple[bytes, str]:
+    response = requests.get(image_url, timeout=timeout)
+    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+    if response.status_code != 200:
+        raise ImageEditError(f"Image download returned HTTP {response.status_code}: {response.text[:200]}")
+    if not content_type.startswith("image/"):
+        raise ImageEditError(f"Image download returned non-image content ({content_type}): {response.text[:200]}")
+    return response.content, content_type
+
+
+def materialize_masked_region_edit(edit_payload: dict) -> str:
+    original_bytes, _original_type = download_image_bytes(edit_payload["image_url"])
+    patch_bytes, _patch_type = download_image_bytes(edit_payload["patch_url"])
+    edited_bytes, _content_type = composite_masked_patch(original_bytes, patch_bytes, edit_payload["mask"])
+
+    digest = hashlib.sha256(
+        f"{edit_payload['image_url']}|{edit_payload['patch_url']}|{edit_payload['mask']}".encode("utf-8")
+    ).hexdigest()[:16]
+    filename = f"masked-edit-{digest}.png"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(edited_bytes)
+    return public_generated_url(filename)
 
 
 def public_generated_url(filename: str) -> str:
@@ -180,6 +209,8 @@ def edit_image_region():
             context_prompt=context_prompt,
             model_choice=DEFAULT_MODEL,
         )
+        edit_payload["edited_image_url"] = materialize_masked_region_edit(edit_payload)
+        edit_payload["workflow"] = "masked-region-seamless-composite"
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except ImageEditError as exc:
@@ -217,6 +248,7 @@ def generate():
         model_choice=DEFAULT_MODEL,
         width=width,
         height=height,
+        seed=stable_generation_seed(prompt, selected_ratio),
     )
 
     return render_index(

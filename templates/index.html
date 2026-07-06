@@ -179,6 +179,7 @@
     const imageRewriteButton = document.getElementById('rewrite-image-prompt');
     const imageRewriteStatus = document.getElementById('image-rewrite-status');
     const imageEditWorkspace = document.getElementById('image-edit-workspace');
+    const generatedImage = document.getElementById('generated-image');
     const imageMaskBox = document.getElementById('image-mask-box');
     const imageEditPatches = document.getElementById('image-edit-patches');
     const drawMaskButton = document.getElementById('draw-mask-button');
@@ -383,17 +384,21 @@
         if (!response.ok || data.error) {
           throw new Error(data.error || 'Masked image edit failed.');
         }
-        const patch = document.createElement('img');
-        patch.className = 'image-edit-patch';
-        patch.src = data.patch_url;
-        patch.alt = `Edited region: ${microPrompt}`;
-        patch.style.left = `${data.mask.x}px`;
-        patch.style.top = `${data.mask.y}px`;
-        patch.style.width = `${data.mask.width}px`;
-        patch.style.height = `${data.mask.height}px`;
-        imageEditPatches.appendChild(patch);
+        if (!data.edited_image_url) {
+          throw new Error('Masked image edit did not return a composited image.');
+        }
+        generatedImage.src = data.edited_image_url;
+        imageEditWorkspace.dataset.imageUrl = data.edited_image_url;
+        imageEditPatches.innerHTML = '';
         clearMaskedEditSelection();
-        maskedEditStatus.textContent = 'Masked region edited; background outside the box remains unchanged.';
+        addLibraryItem({
+          type: 'image',
+          url: data.edited_image_url,
+          downloadUrl: data.edited_image_url,
+          prompt: `${imageEditWorkspace.dataset.contextPrompt || 'Edited image'} — ${microPrompt}`,
+          createdAt: Date.now()
+        });
+        maskedEditStatus.textContent = 'Masked region composited into the image with feathered edges; no blue frame remains.';
       } catch (error) {
         maskedEditStatus.textContent = error.message;
       } finally {

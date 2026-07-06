@@ -38,6 +38,35 @@ class MaskedImageEditTests(unittest.TestCase):
         self.assertIn("match surrounding grass", result["patch_prompt"])
         self.assertIn("preserve original background", result["patch_prompt"])
 
+    def test_composite_masked_patch_feathers_edges_into_original_image(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        from ImageEdit import composite_masked_patch
+
+        original = Image.new("RGB", (100, 100), (10, 20, 30))
+        patch = Image.new("RGB", (40, 40), (220, 60, 40))
+        original_io = BytesIO()
+        patch_io = BytesIO()
+        original.save(original_io, format="PNG")
+        patch.save(patch_io, format="PNG")
+
+        output_bytes, content_type = composite_masked_patch(
+            original_io.getvalue(),
+            patch_io.getvalue(),
+            {"x": 30, "y": 30, "width": 40, "height": 40, "image_width": 100, "image_height": 100},
+            feather_px=8,
+        )
+
+        self.assertEqual(content_type, "image/png")
+        edited = Image.open(BytesIO(output_bytes)).convert("RGB")
+        self.assertEqual(edited.getpixel((10, 10)), (10, 20, 30))
+        self.assertEqual(edited.getpixel((50, 50)), (220, 60, 40))
+        edge_pixel = edited.getpixel((30, 50))
+        self.assertNotEqual(edge_pixel, (10, 20, 30))
+        self.assertNotEqual(edge_pixel, (220, 60, 40))
+
 
 class StoryboardGenerationTests(unittest.TestCase):
     def test_build_storyboard_frames_returns_start_middle_end_frames(self):
@@ -480,6 +509,12 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Generate images and videos from prompts", response.data)
 
+    def test_generate_uses_stable_seed_so_server_side_edits_use_same_original(self):
+        response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"seed=", response.data)
+
     def test_index_includes_session_media_library(self):
         response = self.client.get("/")
 
@@ -499,15 +534,21 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"applyMaskedImageEdit", response.data)
         self.assertIn(b"clearMaskedEditSelection", response.data)
         self.assertIn(b"imageMaskBox.classList.add('hidden')", response.data)
+        self.assertIn(b"edited_image_url", response.data)
+        self.assertIn(b"generatedImage.src = data.edited_image_url", response.data)
+        self.assertIn(b"imageEditPatches.innerHTML = ''", response.data)
+        self.assertNotIn(b"box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.75)", response.data)
 
     @patch("app.build_masked_region_edit")
-    def test_image_edit_region_endpoint_returns_patch_payload(self, mock_edit):
+    @patch("app.materialize_masked_region_edit")
+    def test_image_edit_region_endpoint_returns_seamless_composited_payload(self, mock_materialize, mock_edit):
         mock_edit.return_value = {
             "patch_url": "https://image.pollinations.ai/p/open-door?width=120&height=80",
             "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
             "image_url": "https://example.com/original.jpg",
             "micro_prompt": "open this door",
         }
+        mock_materialize.return_value = "https://app.test/static/generated/masked-edit-123.png"
 
         response = self.client.post(
             "/image/edit-region",
@@ -522,8 +563,11 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["patch_url"], mock_edit.return_value["patch_url"])
+        self.assertEqual(payload["edited_image_url"], mock_materialize.return_value)
+        self.assertEqual(payload["workflow"], "masked-region-seamless-composite")
         self.assertEqual(payload["mask"]["width"], 120)
         mock_edit.assert_called_once()
+        mock_materialize.assert_called_once_with(mock_edit.return_value)
 
     def test_image_edit_region_endpoint_requires_micro_prompt(self):
         response = self.client.post(
