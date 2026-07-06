@@ -91,7 +91,13 @@
             </div>
           </fieldset>
 
-          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent blocks only severe high-confidence issues, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, no generated audio.</p>
+          <label class="checkbox-option" for="generate-audio">
+            <input type="checkbox" id="generate-audio" name="generate_audio" value="true" {% if default_generate_audio %}checked{% endif %}>
+            <span>Add AI-generated audio</span>
+            <small>OpenRouter/Wan 2.6 will try to generate matching sound for the clip. This can cost more credits.</small>
+          </label>
+
+          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent blocks only severe high-confidence issues, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
           <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 
@@ -332,7 +338,8 @@
       const formData = new FormData(videoForm);
       const payload = {
         prompt: formData.get('prompt'),
-        aspect_ratio: formData.get('aspect_ratio')
+        aspect_ratio: formData.get('aspect_ratio'),
+        generate_audio: formData.get('generate_audio') === 'true'
       };
 
       try {
@@ -355,7 +362,8 @@
         videoTitle.textContent = 'Vision-approved I2V job submitted';
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';
-        videoLine.textContent = `Vision Agent accepted free frame${confidence}; OpenRouter I2V job ${data.id}: ${data.status || 'pending'}`;
+        const audioNote = data.generate_audio ? ' with generated audio' : '';
+        videoLine.textContent = `Vision Agent accepted free frame${confidence}; OpenRouter I2V job ${data.id}${audioNote}: ${data.status || 'pending'}`;
         window.setTimeout(() => pollVideoJob(data.id, 0, payload.prompt || '').catch((error) => setVideoError(error.message)), 5000);
       } catch (error) {
         setVideoError(error.message);

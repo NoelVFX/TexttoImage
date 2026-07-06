@@ -323,6 +323,13 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"sessionStorage", response.data)
         self.assertIn(b"addLibraryItem", response.data)
 
+    def test_index_includes_video_audio_toggle(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'name="generate_audio"', response.data)
+        self.assertIn(b"Add AI-generated audio", response.data)
+
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_does_not_submit_paid_i2v_when_vision_rejects(
@@ -438,6 +445,44 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         submitted_args, submitted_kwargs = mock_submit.call_args
         self.assertEqual(submitted_args[0], "A crisp 2D game UI asset with shiny gold coins")
         self.assertEqual(submitted_kwargs["first_frame_url"], "https://image.pollinations.ai/p/approved-frame?seed=7")
+        self.assertFalse(submitted_kwargs["generate_audio"])
+
+    @patch("app.submit_video_job")
+    @patch("app.orchestrate_video_first_frame")
+    def test_start_video_generation_can_request_generated_audio(
+        self, mock_orchestrate, mock_submit
+    ):
+        from OrchestratedVideo import FirstFrameResult, VisionCritique
+
+        critique = VisionCritique(
+            approved=True,
+            confidence=0.92,
+            reason="Composition matches prompt and has no visible distortion.",
+            improvements=[],
+            raw_response="{}",
+        )
+        mock_orchestrate.return_value = FirstFrameResult(
+            original_prompt="waves on a beach",
+            optimized_prompt="A cinematic first frame of waves on a beach",
+            start_frame_url="https://image.pollinations.ai/p/approved-frame?seed=8",
+            critique=critique,
+            attempts=1,
+            width=1280,
+            height=720,
+            seed=8,
+        )
+        mock_submit.return_value = {"id": "job_audio", "polling_url": "https://openrouter.ai/jobs/job_audio", "status": "pending"}
+
+        response = self.client.post(
+            "/video/start",
+            json={"prompt": "waves on a beach", "aspect_ratio": "16:9", "generate_audio": True},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertTrue(payload["generate_audio"])
+        _submitted_args, submitted_kwargs = mock_submit.call_args
+        self.assertTrue(submitted_kwargs["generate_audio"])
 
 
 if __name__ == "__main__":

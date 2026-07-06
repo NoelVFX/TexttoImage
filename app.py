@@ -33,6 +33,14 @@ VIDEO_START_FRAME_SIZES = {
 }
 
 
+def parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def render_index(**overrides):
     context = {
         "aspect_ratios": SUPPORTED_ASPECT_RATIOS.keys(),
@@ -46,6 +54,7 @@ def render_index(**overrides):
         "video_prompt": "",
         "video_error": None,
         "default_video_duration": DEFAULT_VIDEO_DURATION,
+        "default_generate_audio": False,
     }
     context.update(overrides)
     return render_template("index.html", **context)
@@ -102,6 +111,7 @@ def start_video_generation():
     payload = request.get_json(silent=True) or request.form
     prompt = (payload.get("prompt") or "").strip()
     selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+    generate_audio = parse_bool(payload.get("generate_audio"))
 
     if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
         selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
@@ -140,7 +150,7 @@ def start_video_generation():
             aspect_ratio=selected_ratio,
             duration=DEFAULT_VIDEO_DURATION,
             resolution=DEFAULT_VIDEO_RESOLUTION,
-            generate_audio=False,
+            generate_audio=generate_audio,
             first_frame_url=first_frame.start_frame_url,
             timeout=max(5, int(os.environ.get("VIDEO_SUBMIT_TIMEOUT", "8"))),
         )
@@ -166,6 +176,7 @@ def start_video_generation():
             "vision_critique": first_frame.critique.to_dict(),
             "frame_attempts": first_frame.attempts,
             "frame_seed": first_frame.seed,
+            "generate_audio": generate_audio,
             "workflow": "pollinations-vision-gated-start-frame-to-openrouter-i2v",
         }
     ), 202

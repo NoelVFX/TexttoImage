@@ -11,6 +11,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Generated image preview on the same page
 - Image download link
 - Text-to-video prompt input in the browser
+- Optional OpenRouter/Wan generated audio for video clips
 - Cost-saving video workflow:
   1. Hermes optimizes the user's prompt for a stable first-frame composition
   2. Build a free static first frame with Pollinations using a deterministic seed
@@ -21,6 +22,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
   - `16:9` widescreen
   - `9:16` vertical
 - Async video job polling, video preview, and video download link on the same page
+- Video audio toggle that passes `generate_audio=true` to OpenRouter when enabled
 
 ## Environment
 

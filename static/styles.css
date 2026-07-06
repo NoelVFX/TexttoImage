@@ -152,7 +152,8 @@ fieldset {
   margin-top: 10px;
 }
 
-.ratio-option {
+.ratio-option,
+.checkbox-option {
   display: grid;
   gap: 5px;
   cursor: pointer;
@@ -162,7 +163,8 @@ fieldset {
   background: rgba(2, 6, 23, 0.42);
 }
 
-.ratio-option:has(input:checked) {
+.ratio-option:has(input:checked),
+.checkbox-option:has(input:checked) {
   border-color: var(--accent-strong);
   background: rgba(56, 189, 248, 0.12);
 }
@@ -173,11 +175,17 @@ fieldset {
   pointer-events: none;
 }
 
-.ratio-option span {
+.checkbox-option input {
+  width: fit-content;
+}
+
+.ratio-option span,
+.checkbox-option span {
   font-size: 1.15rem;
 }
 
-.ratio-option small {
+.ratio-option small,
+.checkbox-option small {
   color: var(--muted);
 }
 
