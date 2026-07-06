@@ -113,6 +113,86 @@ def _feather_alpha_mask(width: int, height: int, feather_px: int | None = None) 
     return cropped
 
 
+def build_openai_edit_mask(
+    original_bytes: bytes,
+    mask: dict[str, Any],
+    *,
+    feather_px: int = 4,
+) -> tuple[bytes, str]:
+    """Build same-size OpenAI edit mask: transparent editable area, opaque locked pixels."""
+    original = Image.open(BytesIO(original_bytes))
+    box = _scale_mask_box_to_image(mask, image_width=original.width, image_height=original.height)
+    edit_alpha = Image.new("L", (original.width, original.height), 0)
+    draw = ImageDraw.Draw(edit_alpha)
+    draw.rectangle(
+        (box["x"], box["y"], box["x"] + box["width"] - 1, box["y"] + box["height"] - 1),
+        fill=255,
+    )
+    if feather_px > 0:
+        edit_alpha = edit_alpha.filter(ImageFilter.GaussianBlur(radius=feather_px))
+        center_draw = ImageDraw.Draw(edit_alpha)
+        inset = max(1, int(feather_px * 2))
+        if box["width"] > inset * 2 and box["height"] > inset * 2:
+            center_draw.rectangle(
+                (
+                    box["x"] + inset,
+                    box["y"] + inset,
+                    box["x"] + box["width"] - inset - 1,
+                    box["y"] + box["height"] - inset - 1,
+                ),
+                fill=255,
+            )
+
+    # OpenAI edit masks use alpha: transparent pixels are editable, opaque
+    # pixels are preserved. Convert our edit alpha to inverse lock alpha.
+    lock_alpha = Image.eval(edit_alpha, lambda value: 255 - value)
+    mask_image = Image.new("RGBA", (original.width, original.height), (0, 0, 0, 255))
+    mask_image.putalpha(lock_alpha)
+    output = BytesIO()
+    mask_image.save(output, format="PNG", optimize=True)
+    return output.getvalue(), "image/png"
+
+
+def build_inpaint_mask(
+    original_bytes: bytes,
+    mask: dict[str, Any],
+    *,
+    feather_px: int = 4,
+) -> tuple[bytes, str]:
+    """Build a same-size FLUX inpainting mask: black locked pixels, white edit region.
+
+    The incoming mask box is in displayed-image CSS pixels. We scale it back to
+    source pixels, fill that region white, and lightly feather the edge so the
+    inpainted patch blends without blocky seams.
+    """
+    original = Image.open(BytesIO(original_bytes))
+    box = _scale_mask_box_to_image(mask, image_width=original.width, image_height=original.height)
+    alpha = Image.new("L", (original.width, original.height), 0)
+    draw = ImageDraw.Draw(alpha)
+    draw.rectangle(
+        (box["x"], box["y"], box["x"] + box["width"] - 1, box["y"] + box["height"] - 1),
+        fill=255,
+    )
+    if feather_px > 0:
+        alpha = alpha.filter(ImageFilter.GaussianBlur(radius=feather_px))
+        center_draw = ImageDraw.Draw(alpha)
+        inset = max(1, int(feather_px * 2))
+        if box["width"] > inset * 2 and box["height"] > inset * 2:
+            center_draw.rectangle(
+                (
+                    box["x"] + inset,
+                    box["y"] + inset,
+                    box["x"] + box["width"] - inset - 1,
+                    box["y"] + box["height"] - inset - 1,
+                ),
+                fill=255,
+            )
+
+    output = BytesIO()
+    alpha.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue(), "image/png"
+
+
 def composite_masked_patch(
     original_bytes: bytes,
     patch_bytes: bytes,

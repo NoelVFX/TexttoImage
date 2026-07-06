@@ -7,9 +7,13 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
+from FluxInpaint import FluxInpaintError, apply_flux_inpaint
+from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
 from ImageEdit import (
     ImageEditError,
+    build_inpaint_mask,
     build_masked_region_edit,
+    build_openai_edit_mask,
     composite_masked_patch,
     detect_color_recolor_request,
     recolor_masked_region,
@@ -97,6 +101,80 @@ def materialize_color_recolor_edit(image_url: str, mask: dict, target_rgb: tuple
     output_path = GENERATED_DIR / filename
     output_path.write_bytes(edited_bytes)
     return public_generated_url(filename)
+
+
+def write_generated_bytes(filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png") -> str:
+    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+    filename = f"{filename_prefix}-{digest}{suffix}"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(content)
+    return public_generated_url(filename)
+
+
+def materialize_flux_inpaint_edit(image_url: str, mask: dict, micro_prompt: str, context_prompt: str | None = None) -> dict:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    mask_bytes, _mask_type = build_inpaint_mask(
+        original_bytes,
+        mask,
+        feather_px=max(0, int(os.getenv("INPAINT_MASK_FEATHER_PX", "4"))),
+    )
+    digest_base = f"{image_url}|{mask}|{micro_prompt}|flux-inpaint"
+    original_image_url = write_generated_bytes("inpaint-source", digest_base, original_bytes)
+    mask_url = write_generated_bytes("inpaint-mask", digest_base, mask_bytes)
+    prompt = build_masked_region_edit(
+        image_url=image_url,
+        micro_prompt=micro_prompt,
+        mask=mask,
+        context_prompt=context_prompt,
+        model_choice=DEFAULT_MODEL,
+    )["patch_prompt"]
+    flux_image_url = apply_flux_inpaint(
+        image_url=original_image_url,
+        mask_url=mask_url,
+        prompt=prompt,
+        image_size=os.getenv("FAL_INPAINT_IMAGE_SIZE") or None,
+    )
+    final_bytes, _final_type = download_image_bytes(flux_image_url)
+    edited_image_url = write_generated_bytes("flux-inpaint", f"{digest_base}|{flux_image_url}", final_bytes)
+    return {
+        "edited_image_url": edited_image_url,
+        "original_image_url": original_image_url,
+        "mask_url": mask_url,
+        "flux_image_url": flux_image_url,
+        "inpaint_prompt": prompt,
+    }
+
+
+def materialize_openai_image_edit(image_url: str, mask: dict, micro_prompt: str, context_prompt: str | None = None) -> dict:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    mask_bytes, _mask_type = build_openai_edit_mask(
+        original_bytes,
+        mask,
+        feather_px=max(0, int(os.getenv("INPAINT_MASK_FEATHER_PX", "4"))),
+    )
+    prompt = build_masked_region_edit(
+        image_url=image_url,
+        micro_prompt=micro_prompt,
+        mask=mask,
+        context_prompt=context_prompt,
+        model_choice=DEFAULT_MODEL,
+    )["patch_prompt"]
+    edited_bytes = apply_openai_image_edit(
+        image_bytes=original_bytes,
+        mask_bytes=mask_bytes,
+        prompt=prompt,
+    )
+    digest_base = f"{image_url}|{mask}|{micro_prompt}|openai-image-edit"
+    edited_image_url = write_generated_bytes("openai-inpaint", digest_base, edited_bytes)
+    return {
+        "edited_image_url": edited_image_url,
+        "inpaint_prompt": prompt,
+    }
+
+
+def selected_inpaint_provider() -> str:
+    provider = os.getenv("INPAINT_PROVIDER", "openai").strip().lower()
+    return provider or "openai"
 
 
 def public_generated_url(filename: str) -> str:
@@ -235,19 +313,40 @@ def edit_image_region():
                 "workflow": "masked-region-color-recolor",
             }
         else:
-            edit_payload = build_masked_region_edit(
-                image_url=image_url,
-                micro_prompt=micro_prompt,
-                mask=mask,
-                context_prompt=context_prompt,
-                model_choice=DEFAULT_MODEL,
-            )
-            edit_payload["edited_image_url"] = materialize_masked_region_edit(edit_payload)
-            edit_payload["workflow"] = "masked-region-seamless-composite"
+            provider = selected_inpaint_provider()
+            if provider == "fal":
+                inpaint_payload = materialize_flux_inpaint_edit(
+                    image_url=image_url,
+                    mask=mask,
+                    micro_prompt=micro_prompt,
+                    context_prompt=context_prompt,
+                )
+                workflow = "flux-inpainting-mask"
+            elif provider == "openai":
+                inpaint_payload = materialize_openai_image_edit(
+                    image_url=image_url,
+                    mask=mask,
+                    micro_prompt=micro_prompt,
+                    context_prompt=context_prompt,
+                )
+                workflow = "openai-image-edit-mask"
+            else:
+                raise ValueError("Unsupported INPAINT_PROVIDER. Use 'openai' or 'fal'.")
+            edit_payload = {
+                "image_url": image_url,
+                "micro_prompt": micro_prompt,
+                "mask": mask,
+                "workflow": workflow,
+                **inpaint_payload,
+            }
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except ImageEditError as exc:
         return jsonify({"error": str(exc)}), 422
+    except FluxInpaintError as exc:
+        return jsonify({"error": str(exc), "workflow": "flux-inpainting-mask"}), 502
+    except OpenAIImageEditError as exc:
+        return jsonify({"error": str(exc), "workflow": "openai-image-edit-mask"}), 502
     except Exception as exc:
         app.logger.exception("Unexpected error while editing masked image region")
         return jsonify({"error": "Masked image edit failed.", "detail": str(exc)}), 500

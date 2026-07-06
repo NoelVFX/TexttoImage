@@ -368,7 +368,7 @@
         return;
       }
       applyMaskedEditButton.disabled = true;
-      maskedEditStatus.textContent = 'Generating replacement patch...';
+      maskedEditStatus.textContent = 'Applying masked edit with AI inpainting...';
       try {
         const response = await fetch('/image/edit-region', {
           method: 'POST',
@@ -398,7 +398,8 @@
           prompt: `${imageEditWorkspace.dataset.contextPrompt || 'Edited image'} — ${microPrompt}`,
           createdAt: Date.now()
         });
-        maskedEditStatus.textContent = 'Masked region composited into the image with feathered edges; no blue frame remains.';
+        const workflowLabel = data.workflow === 'openai-image-edit-mask' ? 'OpenAI image edit completed' : data.workflow === 'flux-inpainting-mask' ? 'FLUX inpainting completed' : 'Masked region edited';
+        maskedEditStatus.textContent = `${workflowLabel}; unmasked pixels were preserved and no overlay frame remains.`;
       } catch (error) {
         maskedEditStatus.textContent = error.message;
       } finally {
