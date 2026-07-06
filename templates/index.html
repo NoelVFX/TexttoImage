@@ -111,7 +111,6 @@
           </div>
 
           <p class="form-note">Cost saver: Pollinations creates a free start/middle/end storyboard first. You can regenerate a specific frame, then Wan 2.6 animates the selected start frame with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
-          <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 
         <div class="alert hidden" id="video-error" role="alert"></div>
@@ -136,10 +135,7 @@
           <div class="storyboard-panel hidden" id="storyboard-panel">
             <p class="eyebrow">3-frame storyboard before I2V</p>
             <div class="storyboard-grid" id="storyboard-grid"></div>
-          </div>
-          <div class="start-frame-preview hidden" id="start-frame-preview">
-            <p class="eyebrow">Free Pollinations start frame</p>
-            <img class="generated-image start-frame-image" id="start-frame-image" alt="Pollinations-generated starting frame for the video">
+            <button type="button" id="video-generate-button">Generate video from storyboard</button>
           </div>
           <video class="generated-video hidden" id="generated-video" controls playsinline></video>
         </div>
@@ -193,8 +189,6 @@
     const videoDownload = document.getElementById('video-download');
     const storyboardPanel = document.getElementById('storyboard-panel');
     const storyboardGrid = document.getElementById('storyboard-grid');
-    const startFramePreview = document.getElementById('start-frame-preview');
-    const startFrameImage = document.getElementById('start-frame-image');
     const libraryGrid = document.getElementById('session-library-grid');
     const libraryEmpty = document.getElementById('session-library-empty');
     const clearLibraryButton = document.getElementById('clear-session-library');
@@ -383,11 +377,6 @@
         card.append(title, image, textarea, button);
         storyboardGrid.appendChild(card);
       });
-      const startFrame = frames.find((frame) => frame.stage === 'start') || frames[0];
-      if (startFrame) {
-        startFrameImage.src = startFrame.url;
-        startFramePreview.classList.remove('hidden');
-      }
     };
 
     const createStoryboard = async () => {
@@ -459,6 +448,7 @@
     };
 
     createStoryboardButton?.addEventListener('click', () => createStoryboard());
+    videoButton?.addEventListener('click', () => videoForm?.requestSubmit());
 
     const pollVideoJob = async (jobId, attempt = 0, prompt = '') => {
       const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
@@ -512,8 +502,6 @@
       videoPanel.classList.remove('hidden');
       videoEl.classList.add('hidden');
       videoEl.removeAttribute('src');
-      startFramePreview.classList.add('hidden');
-      startFrameImage.removeAttribute('src');
       videoDownload.classList.add('hidden');
       videoDownload.href = '#';
       videoTitle.textContent = 'Building and reviewing free start frame...';
@@ -558,11 +546,7 @@
         if (!data.id) {
           throw new Error('OpenRouter did not return a video job id.');
         }
-        if (data.start_frame_url) {
-          startFrameImage.src = data.start_frame_url;
-          startFramePreview.classList.remove('hidden');
-        }
-        videoTitle.textContent = 'Vision-approved I2V job submitted';
+        videoTitle.textContent = 'Storyboard-approved I2V job submitted';
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';
         const audioNote = data.generate_audio ? ' with generated audio' : '';

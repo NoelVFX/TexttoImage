@@ -482,9 +482,12 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"Create 3-frame storyboard", response.data)
         self.assertIn(b"storyboard-grid", response.data)
         self.assertIn(b"regenerateStoryboardFrame", response.data)
+        self.assertIn(b"Generate video from storyboard", response.data)
+        self.assertNotIn(b"Free Pollinations start frame", response.data)
 
+    @patch("app.materialize_storyboard_frame")
     @patch("app.build_storyboard_frames")
-    def test_video_storyboard_endpoint_returns_three_frames_before_i2v(self, mock_build):
+    def test_video_storyboard_endpoint_returns_three_app_served_frames_before_i2v(self, mock_build, mock_materialize):
         from Storyboard import StoryboardFrame
 
         mock_build.return_value = [
@@ -492,6 +495,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
             StoryboardFrame(stage="middle", label="Middle", prompt="midpoint frame", url="https://img/middle", seed=2),
             StoryboardFrame(stage="end", label="End", prompt="ending frame", url="https://img/end", seed=3),
         ]
+        mock_materialize.side_effect = lambda frame: f"https://app.test/storyboard-{frame.stage}.jpg"
 
         response = self.client.post(
             "/video/storyboard",
@@ -502,11 +506,14 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["workflow"], "pollinations-three-frame-storyboard-before-i2v")
         self.assertEqual([frame["stage"] for frame in payload["frames"]], ["start", "middle", "end"])
-        self.assertEqual(payload["frames"][0]["url"], "https://img/start")
+        self.assertEqual(payload["frames"][0]["url"], "https://app.test/storyboard-start.jpg")
+        self.assertEqual(payload["frames"][0]["source_url"], "https://img/start")
+        self.assertEqual(mock_materialize.call_count, 3)
         mock_build.assert_called_once()
 
+    @patch("app.materialize_storyboard_frame")
     @patch("app.regenerate_storyboard_frame")
-    def test_video_storyboard_frame_endpoint_regenerates_one_frame(self, mock_regenerate):
+    def test_video_storyboard_frame_endpoint_regenerates_one_app_served_frame(self, mock_regenerate, mock_materialize):
         from Storyboard import StoryboardFrame
 
         mock_regenerate.return_value = StoryboardFrame(
@@ -516,6 +523,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
             url="https://img/middle-new",
             seed=9,
         )
+        mock_materialize.return_value = "https://app.test/storyboard-middle-new.jpg"
 
         response = self.client.post(
             "/video/storyboard/frame",
@@ -525,7 +533,9 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["frame"]["stage"], "middle")
-        self.assertEqual(payload["frame"]["url"], "https://img/middle-new")
+        self.assertEqual(payload["frame"]["url"], "https://app.test/storyboard-middle-new.jpg")
+        self.assertEqual(payload["frame"]["source_url"], "https://img/middle-new")
+        mock_materialize.assert_called_once()
         mock_regenerate.assert_called_once()
 
     @patch("app.submit_video_job")

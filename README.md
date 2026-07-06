@@ -16,9 +16,10 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Cost-saving video workflow:
   1. Hermes optimizes the user's prompt for a stable first-frame composition
   2. Build a free 3-frame static storyboard grid with Pollinations: start, middle, and end
-  3. Let the user regenerate any individual storyboard frame with a custom prompt before spending video credits
-  4. Submit the selected/approved start frame into OpenRouter as `frame_images[0]` / `first_frame`
-  5. Animate it with OpenRouter model `alibaba/wan-2.6`
+  3. Save each storyboard frame as an app-served static image URL so OpenRouter/Wan receives a stable file instead of a dynamic generator URL
+  4. Let the user regenerate any individual storyboard frame with a custom prompt before spending video credits
+  5. Submit the selected/approved start frame into OpenRouter as `frame_images[0]` / `first_frame`
+  6. Animate it with OpenRouter model `alibaba/wan-2.6`
 - Video aspect ratio selector:
   - `16:9` widescreen
   - `9:16` vertical
@@ -45,6 +46,7 @@ Optional variables:
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
 - `POLLINATIONS_FALLBACK_MODELS` - comma-separated fallback image models if Pollinations queues/rate-limits the preferred first-frame model; defaults to `turbo,gpt-image-large`
 - `POLLINATIONS_TOKEN` - token from https://auth.pollinations.ai for higher Pollinations limits
+- `PUBLIC_BASE_URL` or `APP_BASE_URL` - optional public HTTPS base URL used for app-served storyboard image URLs sent to OpenRouter
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`
 - `PROMPT_REWRITE_PROVIDER` and `PROMPT_REWRITE_MODEL` - provider/model override for the Hermes AI prompt rewrite subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`

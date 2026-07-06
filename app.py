@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
+import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
 from OpenRouterVideo import (
@@ -41,6 +43,56 @@ def parse_bool(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+STORYBOARD_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+def public_generated_url(filename: str) -> str:
+    public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    path = url_for("static", filename=f"generated/{filename}")
+    if public_base_url:
+        return f"{public_base_url}{path}"
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+    if forwarded_host:
+        scheme = forwarded_proto or request.scheme
+        return f"{scheme}://{forwarded_host}{path}"
+    return url_for("static", filename=f"generated/{filename}", _external=True)
+
+
+def materialize_storyboard_frame(frame, *, timeout: int = 30) -> str:
+    """Download a Pollinations storyboard frame and expose it as a stable app-served image URL.
+
+    Some I2V providers reject dynamic image-generator URLs with errors like
+    "failed to process the file". Serving a normal static image file from the
+    app gives OpenRouter/Wan a direct, stable image URL to fetch.
+    """
+    response = requests.get(frame.url, timeout=timeout)
+    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+    if response.status_code != 200:
+        raise RuntimeError(f"Storyboard image download returned HTTP {response.status_code}: {response.text[:200]}")
+    if not content_type.startswith("image/"):
+        raise RuntimeError(f"Storyboard image download returned non-image content ({content_type}): {response.text[:200]}")
+
+    suffix = STORYBOARD_IMAGE_EXTENSIONS.get(content_type, ".jpg")
+    digest = hashlib.sha256(f"{frame.stage}|{frame.seed}|{frame.url}".encode("utf-8")).hexdigest()[:16]
+    filename = f"storyboard-{frame.stage}-{digest}{suffix}"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(response.content)
+    return public_generated_url(filename)
+
+
+def storyboard_frame_payload(frame) -> dict:
+    payload = frame.to_dict()
+    payload["source_url"] = frame.url
+    payload["url"] = materialize_storyboard_frame(frame)
+    return payload
 
 
 def render_index(**overrides):
@@ -171,7 +223,7 @@ def create_video_storyboard():
             "prompt": prompt,
             "optimized_prompt": frames[0].prompt if frames else prompt,
             "aspect_ratio": selected_ratio,
-            "frames": [frame.to_dict() for frame in frames],
+            "frames": [storyboard_frame_payload(frame) for frame in frames],
             "workflow": "pollinations-three-frame-storyboard-before-i2v",
         }
     )
@@ -207,7 +259,7 @@ def regenerate_video_storyboard_frame():
         app.logger.exception("Unexpected error while regenerating storyboard frame")
         return jsonify({"error": "Storyboard frame regeneration failed.", "detail": str(exc)}), 500
 
-    return jsonify({"frame": frame.to_dict(), "workflow": "pollinations-storyboard-frame-regenerated"})
+    return jsonify({"frame": storyboard_frame_payload(frame), "workflow": "pollinations-storyboard-frame-regenerated"})
 
 
 @app.post("/video/start")
