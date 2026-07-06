@@ -105,7 +105,12 @@
             <small>OpenRouter/Wan 2.6 will try to generate matching sound for the clip. This can cost more credits.</small>
           </label>
 
-          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent blocks only severe high-confidence issues, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
+          <div class="prompt-tools">
+            <button type="button" class="secondary-button" id="create-storyboard-button">Create 3-frame storyboard</button>
+            <span class="prompt-rewrite-status" id="storyboard-status" aria-live="polite"></span>
+          </div>
+
+          <p class="form-note">Cost saver: Pollinations creates a free start/middle/end storyboard first. You can regenerate a specific frame, then Wan 2.6 animates the selected start frame with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
           <button type="submit" id="video-generate-button">Generate video</button>
         </form>
 
@@ -128,6 +133,10 @@
             <a class="download-button hidden" id="video-download" href="#" target="_blank" rel="noopener" download="generated-video.mp4">Download</a>
           </div>
           <p class="status-line" id="video-status-line">Waiting for OpenRouter...</p>
+          <div class="storyboard-panel hidden" id="storyboard-panel">
+            <p class="eyebrow">3-frame storyboard before I2V</p>
+            <div class="storyboard-grid" id="storyboard-grid"></div>
+          </div>
           <div class="start-frame-preview hidden" id="start-frame-preview">
             <p class="eyebrow">Free Pollinations start frame</p>
             <img class="generated-image start-frame-image" id="start-frame-image" alt="Pollinations-generated starting frame for the video">
@@ -173,6 +182,8 @@
     const videoPrompt = document.getElementById('video-prompt');
     const videoRewriteButton = document.getElementById('rewrite-video-prompt');
     const videoRewriteStatus = document.getElementById('video-rewrite-status');
+    const createStoryboardButton = document.getElementById('create-storyboard-button');
+    const storyboardStatus = document.getElementById('storyboard-status');
     const videoError = document.getElementById('video-error');
     const videoEmpty = document.getElementById('video-empty-state');
     const videoPanel = document.getElementById('video-status-panel');
@@ -180,6 +191,8 @@
     const videoLine = document.getElementById('video-status-line');
     const videoEl = document.getElementById('generated-video');
     const videoDownload = document.getElementById('video-download');
+    const storyboardPanel = document.getElementById('storyboard-panel');
+    const storyboardGrid = document.getElementById('storyboard-grid');
     const startFramePreview = document.getElementById('start-frame-preview');
     const startFrameImage = document.getElementById('start-frame-image');
     const libraryGrid = document.getElementById('session-library-grid');
@@ -193,6 +206,7 @@
       prompt: {{ prompt|tojson }},
       createdAt: Date.now()
     };
+    let currentStoryboard = null;
 
     const setVideoError = (message) => {
       videoError.textContent = message;
@@ -342,6 +356,110 @@
     }
     renderLibrary();
 
+    const renderStoryboard = (storyboard) => {
+      currentStoryboard = storyboard;
+      storyboardGrid.innerHTML = '';
+      storyboardPanel.classList.remove('hidden');
+      const frames = storyboard.frames || [];
+      frames.forEach((frame) => {
+        const card = document.createElement('article');
+        card.className = 'storyboard-frame-card';
+        card.dataset.stage = frame.stage;
+
+        const title = document.createElement('strong');
+        title.textContent = frame.label || frame.stage;
+        const image = document.createElement('img');
+        image.src = frame.url;
+        image.alt = `${frame.label || frame.stage} storyboard frame`;
+        const textarea = document.createElement('textarea');
+        textarea.rows = 3;
+        textarea.value = frame.prompt || '';
+        textarea.setAttribute('aria-label', `${frame.label || frame.stage} frame regeneration prompt`);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'secondary-button storyboard-regenerate-button';
+        button.textContent = `Regenerate ${frame.label || frame.stage}`;
+        button.addEventListener('click', () => regenerateStoryboardFrame(frame.stage, textarea.value, button));
+        card.append(title, image, textarea, button);
+        storyboardGrid.appendChild(card);
+      });
+      const startFrame = frames.find((frame) => frame.stage === 'start') || frames[0];
+      if (startFrame) {
+        startFrameImage.src = startFrame.url;
+        startFramePreview.classList.remove('hidden');
+      }
+    };
+
+    const createStoryboard = async () => {
+      const prompt = videoPrompt.value.trim();
+      if (!prompt) {
+        setVideoError('Please enter a prompt before creating a storyboard.');
+        return null;
+      }
+      const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      createStoryboardButton.disabled = true;
+      storyboardStatus.textContent = 'Creating start, middle, and end frames...';
+      videoEmpty.classList.add('hidden');
+      videoPanel.classList.remove('hidden');
+      videoTitle.textContent = 'Review your storyboard';
+      videoLine.textContent = 'Create or regenerate frames before submitting the paid I2V job.';
+      try {
+        const response = await fetch('/video/storyboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, aspect_ratio: selectedRatio })
+        });
+        const data = await parseJsonResponse(response, 'Storyboard request failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Storyboard request failed.');
+        }
+        renderStoryboard(data);
+        storyboardStatus.textContent = 'Storyboard ready. Regenerate any frame, then click Generate video.';
+        return data;
+      } catch (error) {
+        setVideoError(error.message);
+        storyboardStatus.textContent = error.message;
+        return null;
+      } finally {
+        createStoryboardButton.disabled = false;
+      }
+    };
+
+    const regenerateStoryboardFrame = async (stage, prompt, button) => {
+      const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Regenerating...';
+      storyboardStatus.textContent = `Regenerating ${stage} frame...`;
+      try {
+        const response = await fetch('/video/storyboard/frame', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            stage,
+            aspect_ratio: selectedRatio,
+            base_prompt: currentStoryboard?.optimized_prompt || videoPrompt.value.trim()
+          })
+        });
+        const data = await parseJsonResponse(response, 'Storyboard frame regeneration failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Storyboard frame regeneration failed.');
+        }
+        currentStoryboard.frames = currentStoryboard.frames.map((frame) => frame.stage === data.frame.stage ? data.frame : frame);
+        renderStoryboard(currentStoryboard);
+        storyboardStatus.textContent = `${data.frame.label} frame regenerated.`;
+      } catch (error) {
+        setVideoError(error.message);
+        storyboardStatus.textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    };
+
+    createStoryboardButton?.addEventListener('click', () => createStoryboard());
+
     const pollVideoJob = async (jobId, attempt = 0, prompt = '') => {
       const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
       const data = await parseJsonResponse(response, 'Video status request failed.');
@@ -404,10 +522,27 @@
       videoButton.textContent = 'Generating...';
 
       const formData = new FormData(videoForm);
+      const hadStoryboard = Boolean(currentStoryboard);
+      const storyboard = currentStoryboard || await createStoryboard();
+      if (!storyboard) {
+        videoButton.disabled = false;
+        videoButton.textContent = 'Generate video';
+        return;
+      }
+      if (!hadStoryboard) {
+        videoButton.disabled = false;
+        videoButton.textContent = 'Generate video';
+        videoTitle.textContent = 'Review your storyboard';
+        videoLine.textContent = 'Storyboard created. Regenerate any frame if needed, then click Generate video again to submit I2V.';
+        return;
+      }
+      const startFrame = storyboard.frames?.find((frame) => frame.stage === 'start') || storyboard.frames?.[0];
       const payload = {
         prompt: formData.get('prompt'),
+        optimized_prompt: storyboard.optimized_prompt || formData.get('prompt'),
         aspect_ratio: formData.get('aspect_ratio'),
-        generate_audio: formData.get('generate_audio') === 'true'
+        generate_audio: formData.get('generate_audio') === 'true',
+        storyboard_start_frame_url: startFrame?.url
       };
 
       try {

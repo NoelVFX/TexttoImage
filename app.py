@@ -17,8 +17,9 @@ from OpenRouterVideo import (
     get_video_content,
     submit_video_job,
 )
-from OrchestratedVideo import VideoOrchestrationError, orchestrate_video_first_frame
+from OrchestratedVideo import FirstFrameResult, VideoOrchestrationError, VisionCritique, orchestrate_video_first_frame
 from PromptRewrite import PromptRewriteError, rewrite_prompt
+from Storyboard import build_storyboard_frames, regenerate_storyboard_frame
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -139,6 +140,76 @@ def generate():
     )
 
 
+@app.post("/video/storyboard")
+def create_video_storyboard():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+
+    if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
+        selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before creating a storyboard."}), 400
+
+    frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    try:
+        frames = build_storyboard_frames(
+            prompt,
+            aspect_ratio=selected_ratio,
+            width=frame_width,
+            height=frame_height,
+            model_choice=DEFAULT_MODEL,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Unexpected error while creating video storyboard")
+        return jsonify({"error": "Storyboard generation failed.", "detail": str(exc)}), 500
+
+    return jsonify(
+        {
+            "prompt": prompt,
+            "optimized_prompt": frames[0].prompt if frames else prompt,
+            "aspect_ratio": selected_ratio,
+            "frames": [frame.to_dict() for frame in frames],
+            "workflow": "pollinations-three-frame-storyboard-before-i2v",
+        }
+    )
+
+
+@app.post("/video/storyboard/frame")
+def regenerate_video_storyboard_frame():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    base_prompt = (payload.get("base_prompt") or "").strip() or None
+    selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+    stage = payload.get("stage") or "start"
+
+    if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
+        selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before regenerating a storyboard frame."}), 400
+
+    frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    try:
+        frame = regenerate_storyboard_frame(
+            prompt,
+            stage=stage,
+            aspect_ratio=selected_ratio,
+            width=frame_width,
+            height=frame_height,
+            model_choice=DEFAULT_MODEL,
+            base_prompt=base_prompt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Unexpected error while regenerating storyboard frame")
+        return jsonify({"error": "Storyboard frame regeneration failed.", "detail": str(exc)}), 500
+
+    return jsonify({"frame": frame.to_dict(), "workflow": "pollinations-storyboard-frame-regenerated"})
+
+
 @app.post("/video/start")
 def start_video_generation():
     payload = request.get_json(silent=True) or request.form
@@ -153,29 +224,49 @@ def start_video_generation():
         return jsonify({"error": "Please enter a prompt before generating a video."}), 400
 
     frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    storyboard_start_frame_url = (payload.get("storyboard_start_frame_url") or payload.get("start_frame_url") or "").strip()
+    storyboard_optimized_prompt = (payload.get("optimized_prompt") or prompt).strip()
 
-    try:
-        first_frame = orchestrate_video_first_frame(
-            prompt,
-            aspect_ratio=selected_ratio,
+    if storyboard_start_frame_url:
+        first_frame = FirstFrameResult(
+            original_prompt=prompt,
+            optimized_prompt=storyboard_optimized_prompt,
+            start_frame_url=storyboard_start_frame_url,
+            critique=VisionCritique(
+                approved=True,
+                confidence=1.0,
+                reason="User-approved storyboard start frame selected before paid I2V submission.",
+                improvements=[],
+                raw_response="",
+            ),
+            attempts=1,
             width=frame_width,
             height=frame_height,
-            model_choice=DEFAULT_MODEL,
-            max_attempts=max(1, int(os.environ.get("VIDEO_ORCHESTRATOR_MAX_ATTEMPTS", "1"))),
+            seed=0,
         )
-    except VideoOrchestrationError as exc:
-        return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        app.logger.exception("Unexpected error while preparing video first frame")
-        return jsonify(
-            {
-                "error": "Video generation failed before the paid I2V job was submitted.",
-                "detail": str(exc),
-                "workflow": "vision-gated-i2v-blocked",
-            }
-        ), 500
+    else:
+        try:
+            first_frame = orchestrate_video_first_frame(
+                prompt,
+                aspect_ratio=selected_ratio,
+                width=frame_width,
+                height=frame_height,
+                model_choice=DEFAULT_MODEL,
+                max_attempts=max(1, int(os.environ.get("VIDEO_ORCHESTRATOR_MAX_ATTEMPTS", "1"))),
+            )
+        except VideoOrchestrationError as exc:
+            return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            app.logger.exception("Unexpected error while preparing video first frame")
+            return jsonify(
+                {
+                    "error": "Video generation failed before the paid I2V job was submitted.",
+                    "detail": str(exc),
+                    "workflow": "vision-gated-i2v-blocked",
+                }
+            ), 500
 
     try:
         job = submit_video_job(

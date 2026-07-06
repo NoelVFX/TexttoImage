@@ -276,6 +276,41 @@ button:disabled {
   margin: 18px 0;
 }
 
+.storyboard-panel {
+  margin: 18px 0;
+}
+
+.storyboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.storyboard-frame-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 12px;
+  background: rgba(2, 6, 23, 0.42);
+}
+
+.storyboard-frame-card img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.7);
+}
+
+.storyboard-frame-card textarea {
+  min-height: 88px;
+  border-radius: 14px;
+  padding: 12px;
+  font-size: 0.9rem;
+}
+
 .start-frame-image {
   max-height: 360px;
 }

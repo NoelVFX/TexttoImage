@@ -10,6 +10,46 @@ import app
 from TexttoImage import build_pollinations_url
 
 
+class StoryboardGenerationTests(unittest.TestCase):
+    def test_build_storyboard_frames_returns_start_middle_end_frames(self):
+        from Storyboard import build_storyboard_frames
+
+        frames = build_storyboard_frames(
+            "a monkey holding colorful eggs",
+            aspect_ratio="16:9",
+            width=1280,
+            height=720,
+            prompt_optimizer=lambda prompt, *, aspect_ratio: "cinematic monkey with colorful eggs",
+        )
+
+        self.assertEqual([frame.stage for frame in frames], ["start", "middle", "end"])
+        self.assertEqual([frame.label for frame in frames], ["Start", "Middle", "End"])
+        self.assertEqual(len({frame.seed for frame in frames}), 3)
+        self.assertTrue(all("width=1280" in frame.url for frame in frames))
+        self.assertTrue(all("height=720" in frame.url for frame in frames))
+        self.assertIn("opening", frames[0].prompt.lower())
+        self.assertIn("midpoint", frames[1].prompt.lower())
+        self.assertIn("ending", frames[2].prompt.lower())
+
+    def test_regenerate_storyboard_frame_uses_custom_frame_prompt(self):
+        from Storyboard import regenerate_storyboard_frame
+
+        frame = regenerate_storyboard_frame(
+            "make the monkey jump higher",
+            stage="middle",
+            aspect_ratio="9:16",
+            width=720,
+            height=1280,
+        )
+
+        self.assertEqual(frame.stage, "middle")
+        self.assertEqual(frame.label, "Middle")
+        self.assertIn("make the monkey jump higher", frame.prompt)
+        self.assertIn("width=720", frame.url)
+        self.assertIn("height=1280", frame.url)
+
+
+
 class PollinationsUrlTests(unittest.TestCase):
     def test_build_pollinations_url_includes_seed_when_provided(self):
         url = build_pollinations_url("gold coins", width=720, height=720, seed=12345)
@@ -434,6 +474,84 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"Rewrite image prompt", response.data)
         self.assertIn(b"Rewrite video prompt", response.data)
         self.assertIn(b"rewritePrompt", response.data)
+
+    def test_index_includes_storyboard_grid_controls(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Create 3-frame storyboard", response.data)
+        self.assertIn(b"storyboard-grid", response.data)
+        self.assertIn(b"regenerateStoryboardFrame", response.data)
+
+    @patch("app.build_storyboard_frames")
+    def test_video_storyboard_endpoint_returns_three_frames_before_i2v(self, mock_build):
+        from Storyboard import StoryboardFrame
+
+        mock_build.return_value = [
+            StoryboardFrame(stage="start", label="Start", prompt="opening frame", url="https://img/start", seed=1),
+            StoryboardFrame(stage="middle", label="Middle", prompt="midpoint frame", url="https://img/middle", seed=2),
+            StoryboardFrame(stage="end", label="End", prompt="ending frame", url="https://img/end", seed=3),
+        ]
+
+        response = self.client.post(
+            "/video/storyboard",
+            json={"prompt": "monkey with colorful eggs", "aspect_ratio": "16:9"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["workflow"], "pollinations-three-frame-storyboard-before-i2v")
+        self.assertEqual([frame["stage"] for frame in payload["frames"]], ["start", "middle", "end"])
+        self.assertEqual(payload["frames"][0]["url"], "https://img/start")
+        mock_build.assert_called_once()
+
+    @patch("app.regenerate_storyboard_frame")
+    def test_video_storyboard_frame_endpoint_regenerates_one_frame(self, mock_regenerate):
+        from Storyboard import StoryboardFrame
+
+        mock_regenerate.return_value = StoryboardFrame(
+            stage="middle",
+            label="Middle",
+            prompt="monkey jumps higher",
+            url="https://img/middle-new",
+            seed=9,
+        )
+
+        response = self.client.post(
+            "/video/storyboard/frame",
+            json={"prompt": "monkey jumps higher", "stage": "middle", "aspect_ratio": "16:9"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["frame"]["stage"], "middle")
+        self.assertEqual(payload["frame"]["url"], "https://img/middle-new")
+        mock_regenerate.assert_called_once()
+
+    @patch("app.submit_video_job")
+    @patch("app.orchestrate_video_first_frame")
+    def test_start_video_generation_uses_approved_storyboard_start_frame_without_regenerating(
+        self, mock_orchestrate, mock_submit
+    ):
+        mock_submit.return_value = {"id": "job_story", "polling_url": "https://openrouter.ai/jobs/job_story", "status": "pending"}
+
+        response = self.client.post(
+            "/video/start",
+            json={
+                "prompt": "monkey with colorful eggs",
+                "optimized_prompt": "cinematic monkey storyboard",
+                "aspect_ratio": "16:9",
+                "storyboard_start_frame_url": "https://img/start-approved",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertEqual(payload["start_frame_url"], "https://img/start-approved")
+        mock_orchestrate.assert_not_called()
+        submitted_args, submitted_kwargs = mock_submit.call_args
+        self.assertEqual(submitted_args[0], "cinematic monkey storyboard")
+        self.assertEqual(submitted_kwargs["first_frame_url"], "https://img/start-approved")
 
     @patch("app.rewrite_prompt")
     def test_prompt_rewrite_endpoint_returns_rewritten_prompt(self, mock_rewrite):
