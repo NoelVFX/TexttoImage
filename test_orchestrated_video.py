@@ -67,6 +67,38 @@ class MaskedImageEditTests(unittest.TestCase):
         self.assertNotEqual(edge_pixel, (10, 20, 30))
         self.assertNotEqual(edge_pixel, (220, 60, 40))
 
+    def test_recolor_masked_region_changes_only_object_color_without_duplicating_shape(self):
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+
+        from ImageEdit import detect_color_recolor_request, recolor_masked_region
+
+        original = Image.new("RGB", (100, 100), (235, 235, 225))
+        draw = ImageDraw.Draw(original)
+        draw.ellipse((28, 24, 72, 74), fill=(190, 20, 30))
+        draw.ellipse((42, 28, 58, 46), fill=(235, 70, 70))
+        original_io = BytesIO()
+        original.save(original_io, format="PNG")
+
+        request = detect_color_recolor_request("change the apple color to green")
+        self.assertIsNotNone(request)
+        output_bytes, content_type = recolor_masked_region(
+            original_io.getvalue(),
+            {"x": 20, "y": 18, "width": 60, "height": 64, "image_width": 100, "image_height": 100},
+            request.target_rgb,
+        )
+
+        self.assertEqual(content_type, "image/png")
+        edited = Image.open(BytesIO(output_bytes)).convert("RGB")
+        self.assertEqual(edited.getpixel((10, 10)), (235, 235, 225))
+        self.assertEqual(edited.getpixel((22, 20)), (235, 235, 225))
+        center = edited.getpixel((50, 52))
+        self.assertGreater(center[1], center[0])
+        self.assertGreater(center[1], center[2])
+        # The original apple shape remains a single recolored object: nearby masked
+        # background pixels stay background instead of becoming a generated apple patch.
+
 
 class StoryboardGenerationTests(unittest.TestCase):
     def test_build_storyboard_frames_returns_start_middle_end_frames(self):
@@ -568,6 +600,30 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["mask"]["width"], 120)
         mock_edit.assert_called_once()
         mock_materialize.assert_called_once_with(mock_edit.return_value)
+
+    @patch("app.build_masked_region_edit")
+    @patch("app.materialize_color_recolor_edit")
+    def test_image_edit_region_endpoint_recolors_mask_without_generating_second_object(self, mock_recolor, mock_edit):
+        mock_recolor.return_value = "https://app.test/static/generated/masked-recolor-123.png"
+
+        response = self.client.post(
+            "/image/edit-region",
+            json={
+                "image_url": "https://example.com/original-apple.jpg",
+                "micro_prompt": "change the apple color to green",
+                "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+                "context_prompt": "a red apple on a table",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["edited_image_url"], mock_recolor.return_value)
+        self.assertEqual(payload["workflow"], "masked-region-color-recolor")
+        self.assertEqual(payload["target_color"], "green")
+        self.assertNotIn("patch_url", payload)
+        mock_edit.assert_not_called()
+        mock_recolor.assert_called_once()
 
     def test_image_edit_region_endpoint_requires_micro_prompt(self):
         response = self.client.post(

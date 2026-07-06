@@ -7,7 +7,13 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
-from ImageEdit import ImageEditError, build_masked_region_edit, composite_masked_patch
+from ImageEdit import (
+    ImageEditError,
+    build_masked_region_edit,
+    composite_masked_patch,
+    detect_color_recolor_request,
+    recolor_masked_region,
+)
 from OpenRouterVideo import (
     DEFAULT_VIDEO_ASPECT_RATIO,
     DEFAULT_VIDEO_DURATION,
@@ -78,6 +84,16 @@ def materialize_masked_region_edit(edit_payload: dict) -> str:
         f"{edit_payload['image_url']}|{edit_payload['patch_url']}|{edit_payload['mask']}".encode("utf-8")
     ).hexdigest()[:16]
     filename = f"masked-edit-{digest}.png"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(edited_bytes)
+    return public_generated_url(filename)
+
+
+def materialize_color_recolor_edit(image_url: str, mask: dict, target_rgb: tuple[int, int, int], target_name: str) -> str:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    edited_bytes, _content_type = recolor_masked_region(original_bytes, mask, target_rgb)
+    digest = hashlib.sha256(f"{image_url}|{mask}|{target_name}|color-recolor".encode("utf-8")).hexdigest()[:16]
+    filename = f"masked-recolor-{digest}.png"
     output_path = GENERATED_DIR / filename
     output_path.write_bytes(edited_bytes)
     return public_generated_url(filename)
@@ -202,15 +218,32 @@ def edit_image_region():
         return jsonify({"error": "A mask box is required before editing a region."}), 400
 
     try:
-        edit_payload = build_masked_region_edit(
-            image_url=image_url,
-            micro_prompt=micro_prompt,
-            mask=mask,
-            context_prompt=context_prompt,
-            model_choice=DEFAULT_MODEL,
-        )
-        edit_payload["edited_image_url"] = materialize_masked_region_edit(edit_payload)
-        edit_payload["workflow"] = "masked-region-seamless-composite"
+        color_request = detect_color_recolor_request(micro_prompt)
+        if color_request:
+            edited_image_url = materialize_color_recolor_edit(
+                image_url,
+                mask,
+                color_request.target_rgb,
+                color_request.target_name,
+            )
+            edit_payload = {
+                "image_url": image_url,
+                "micro_prompt": micro_prompt,
+                "mask": mask,
+                "edited_image_url": edited_image_url,
+                "target_color": color_request.target_name,
+                "workflow": "masked-region-color-recolor",
+            }
+        else:
+            edit_payload = build_masked_region_edit(
+                image_url=image_url,
+                micro_prompt=micro_prompt,
+                mask=mask,
+                context_prompt=context_prompt,
+                model_choice=DEFAULT_MODEL,
+            )
+            edit_payload["edited_image_url"] = materialize_masked_region_edit(edit_payload)
+            edit_payload["workflow"] = "masked-region-seamless-composite"
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except ImageEditError as exc:
