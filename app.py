@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+import time
+import uuid
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context
 
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
@@ -41,6 +44,10 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+IMAGE_EDIT_JOBS: dict[str, dict] = {}
+IMAGE_EDIT_JOBS_LOCK = threading.Lock()
+IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
 
 VIDEO_START_FRAME_SIZES = {
     "16:9": (1280, 720),
@@ -179,9 +186,13 @@ def selected_inpaint_provider() -> str:
 
 def public_generated_url(filename: str) -> str:
     public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
-    path = url_for("static", filename=f"generated/{filename}")
+    path = f"/static/generated/{filename}"
+    if has_request_context():
+        path = url_for("static", filename=f"generated/{filename}")
     if public_base_url:
         return f"{public_base_url}{path}"
+    if not has_request_context():
+        return path
     forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
     forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
     if forwarded_host:
@@ -280,6 +291,111 @@ def rewrite_generation_prompt():
     )
 
 
+def build_image_edit_payload(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> dict:
+    color_request = detect_color_recolor_request(micro_prompt)
+    if color_request:
+        color_prompt = (
+            f"Change only the selected object's color to {color_request.target_name}. "
+            "Preserve the exact same object shape, size, position, texture, lighting, shadows, and background. "
+            "Do not add, remove, duplicate, resize, or redraw the object."
+        )
+        inpaint_payload = materialize_openai_image_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=color_prompt,
+            context_prompt=context_prompt,
+        )
+        return {
+            "image_url": image_url,
+            "micro_prompt": micro_prompt,
+            "mask": mask,
+            "target_color": color_request.target_name,
+            "workflow": "openai-image-edit-mask",
+            **inpaint_payload,
+        }
+
+    provider = selected_inpaint_provider()
+    if provider == "fal":
+        inpaint_payload = materialize_flux_inpaint_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=micro_prompt,
+            context_prompt=context_prompt,
+        )
+        workflow = "flux-inpainting-mask"
+    elif provider == "openai":
+        inpaint_payload = materialize_openai_image_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=micro_prompt,
+            context_prompt=context_prompt,
+        )
+        workflow = "openai-image-edit-mask"
+    else:
+        raise ValueError("Unsupported INPAINT_PROVIDER. Use 'openai' or 'fal'.")
+    return {
+        "image_url": image_url,
+        "micro_prompt": micro_prompt,
+        "mask": mask,
+        "workflow": workflow,
+        **inpaint_payload,
+    }
+
+
+def prune_image_edit_jobs(now: float | None = None) -> None:
+    now = now or time.time()
+    with IMAGE_EDIT_JOBS_LOCK:
+        stale_ids = [
+            job_id
+            for job_id, job in IMAGE_EDIT_JOBS.items()
+            if now - float(job.get("created_at", now)) > IMAGE_EDIT_JOB_TTL_SECONDS
+        ]
+        for job_id in stale_ids:
+            IMAGE_EDIT_JOBS.pop(job_id, None)
+
+
+def start_image_edit_job(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> str:
+    prune_image_edit_jobs()
+    job_id = f"edit_{uuid.uuid4().hex}"
+    with IMAGE_EDIT_JOBS_LOCK:
+        IMAGE_EDIT_JOBS[job_id] = {
+            "status": "queued",
+            "result": None,
+            "error": None,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+
+    def worker() -> None:
+        with IMAGE_EDIT_JOBS_LOCK:
+            if job_id in IMAGE_EDIT_JOBS:
+                IMAGE_EDIT_JOBS[job_id]["status"] = "running"
+                IMAGE_EDIT_JOBS[job_id]["updated_at"] = time.time()
+        try:
+            with app.app_context():
+                result = build_image_edit_payload(
+                    image_url=image_url,
+                    micro_prompt=micro_prompt,
+                    mask=mask,
+                    context_prompt=context_prompt,
+                )
+            with IMAGE_EDIT_JOBS_LOCK:
+                if job_id in IMAGE_EDIT_JOBS:
+                    IMAGE_EDIT_JOBS[job_id].update(
+                        {"status": "completed", "result": result, "error": None, "updated_at": time.time()}
+                    )
+        except Exception as exc:
+            app.logger.exception("Background masked image edit failed")
+            with IMAGE_EDIT_JOBS_LOCK:
+                if job_id in IMAGE_EDIT_JOBS:
+                    IMAGE_EDIT_JOBS[job_id].update(
+                        {"status": "failed", "result": None, "error": str(exc), "updated_at": time.time()}
+                    )
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
 @app.post("/image/edit-region")
 def edit_image_region():
     payload = request.get_json(silent=True) or request.form
@@ -296,49 +412,29 @@ def edit_image_region():
         return jsonify({"error": "A mask box is required before editing a region."}), 400
 
     try:
-        color_request = detect_color_recolor_request(micro_prompt)
-        if color_request:
-            edited_image_url = materialize_color_recolor_edit(
-                image_url,
-                mask,
-                color_request.target_rgb,
-                color_request.target_name,
+        run_async = parse_bool(os.getenv("IMAGE_EDIT_ASYNC", "true")) and not parse_bool(payload.get("sync"))
+        if run_async:
+            job_id = start_image_edit_job(
+                image_url=image_url,
+                micro_prompt=micro_prompt,
+                mask=mask,
+                context_prompt=context_prompt,
             )
-            edit_payload = {
-                "image_url": image_url,
-                "micro_prompt": micro_prompt,
-                "mask": mask,
-                "edited_image_url": edited_image_url,
-                "target_color": color_request.target_name,
-                "workflow": "masked-region-color-recolor",
-            }
-        else:
-            provider = selected_inpaint_provider()
-            if provider == "fal":
-                inpaint_payload = materialize_flux_inpaint_edit(
-                    image_url=image_url,
-                    mask=mask,
-                    micro_prompt=micro_prompt,
-                    context_prompt=context_prompt,
-                )
-                workflow = "flux-inpainting-mask"
-            elif provider == "openai":
-                inpaint_payload = materialize_openai_image_edit(
-                    image_url=image_url,
-                    mask=mask,
-                    micro_prompt=micro_prompt,
-                    context_prompt=context_prompt,
-                )
-                workflow = "openai-image-edit-mask"
-            else:
-                raise ValueError("Unsupported INPAINT_PROVIDER. Use 'openai' or 'fal'.")
-            edit_payload = {
-                "image_url": image_url,
-                "micro_prompt": micro_prompt,
-                "mask": mask,
-                "workflow": workflow,
-                **inpaint_payload,
-            }
+            return jsonify(
+                {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "status_url": url_for("image_edit_region_status", job_id=job_id),
+                    "workflow": "masked-image-edit-async",
+                }
+            ), 202
+
+        edit_payload = build_image_edit_payload(
+            image_url=image_url,
+            micro_prompt=micro_prompt,
+            mask=mask,
+            context_prompt=context_prompt,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except ImageEditError as exc:
@@ -352,6 +448,24 @@ def edit_image_region():
         return jsonify({"error": "Masked image edit failed.", "detail": str(exc)}), 500
 
     return jsonify(edit_payload)
+
+
+@app.get("/image/edit-region/status/<job_id>")
+def image_edit_region_status(job_id: str):
+    prune_image_edit_jobs()
+    with IMAGE_EDIT_JOBS_LOCK:
+        job = IMAGE_EDIT_JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "Image edit job not found."}), 404
+        payload = {
+            "job_id": job_id,
+            "status": job.get("status", "unknown"),
+            "result": job.get("result"),
+            "error": job.get("error"),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+        }
+    return jsonify(payload)
 
 
 @app.post("/generate")

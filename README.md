@@ -12,7 +12,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Generated image preview on the same page
 - OpenAI image-edit masked edits: draw a box over a specific element, type a micro-prompt, and the app uploads the source image plus alpha mask so OpenAI edits only the selected area while preserving unmasked pixels
 - Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
-- Color-only masked edits use a deterministic recolor path so requests like `change the apple color to green` preserve the original object shape, size, texture, lighting, and background
+- Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips
@@ -61,6 +61,8 @@ Optional variables:
 - `FAL_INPAINT_IMAGE_SIZE` - optional Fal image size hint such as `landscape_16_9`
 - `FAL_INPAINT_STEPS` - FLUX inpainting inference steps; default `28`
 - `INPAINT_MASK_FEATHER_PX` - pixel blur radius for generated mask edges; default `4`
+- `IMAGE_EDIT_ASYNC` - run masked edits in a background job with browser polling; default `true` to avoid long request/proxy timeouts
+- `IMAGE_EDIT_JOB_TTL_SECONDS` - seconds to keep completed/failed masked edit jobs in memory; default `3600`
 - `PUBLIC_BASE_URL` or `APP_BASE_URL` - optional public HTTPS base URL used for app-served storyboard/mask/source image URLs sent to OpenRouter or Fal.ai; not required for OpenAI image edits because the app uploads image bytes
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`

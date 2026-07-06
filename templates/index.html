@@ -357,6 +357,46 @@
       maskedEditStatus.textContent = 'Mask selected. Add a micro-prompt and apply the edit.';
     });
 
+    const finalizeMaskedImageEdit = (data, microPrompt) => {
+      if (!data.edited_image_url) {
+        throw new Error('Masked image edit did not return a composited image.');
+      }
+      generatedImage.src = data.edited_image_url;
+      imageEditWorkspace.dataset.imageUrl = data.edited_image_url;
+      imageEditPatches.innerHTML = '';
+      clearMaskedEditSelection();
+      addLibraryItem({
+        type: 'image',
+        url: data.edited_image_url,
+        downloadUrl: data.edited_image_url,
+        prompt: `${imageEditWorkspace.dataset.contextPrompt || 'Edited image'} — ${microPrompt}`,
+        createdAt: Date.now()
+      });
+      const workflowLabel = data.workflow === 'openai-image-edit-mask' ? 'OpenAI image edit completed' : data.workflow === 'flux-inpainting-mask' ? 'FLUX inpainting completed' : 'Masked region edited';
+      maskedEditStatus.textContent = `${workflowLabel}; unmasked pixels were preserved and no overlay frame remains.`;
+    };
+
+    const pollMaskedEditJob = async (statusUrl, microPrompt, attempt = 0) => {
+      if (attempt > 120) {
+        throw new Error('Masked image edit is still running after 10 minutes. Please try again or check server logs.');
+      }
+      const response = await fetch(statusUrl);
+      const data = await parseJsonResponse(response, 'Masked image edit status failed.');
+      if (!response.ok || data.error) {
+        throw new Error(data.error || 'Masked image edit status failed.');
+      }
+      if (data.status === 'completed') {
+        finalizeMaskedImageEdit(data.result || {}, microPrompt);
+        return;
+      }
+      if (data.status === 'failed') {
+        throw new Error(data.error || 'Masked image edit failed.');
+      }
+      maskedEditStatus.textContent = `Masked edit ${data.status || 'running'}... waiting for AI image edit job ${data.job_id || ''}`;
+      await new Promise((resolve) => window.setTimeout(resolve, 5000));
+      return pollMaskedEditJob(statusUrl, microPrompt, attempt + 1);
+    };
+
     const applyMaskedImageEdit = async () => {
       if (!imageEditWorkspace || !selectedImageMask) {
         maskedEditStatus.textContent = 'Draw a mask box first.';
@@ -381,25 +421,15 @@
           })
         });
         const data = await parseJsonResponse(response, 'Masked image edit failed.');
+        if (response.status === 202 && data.job_id) {
+          maskedEditStatus.textContent = `Masked edit queued as ${data.job_id}. Waiting for AI image edit...`;
+          await pollMaskedEditJob(data.status_url || `/image/edit-region/status/${encodeURIComponent(data.job_id)}`, microPrompt);
+          return;
+        }
         if (!response.ok || data.error) {
           throw new Error(data.error || 'Masked image edit failed.');
         }
-        if (!data.edited_image_url) {
-          throw new Error('Masked image edit did not return a composited image.');
-        }
-        generatedImage.src = data.edited_image_url;
-        imageEditWorkspace.dataset.imageUrl = data.edited_image_url;
-        imageEditPatches.innerHTML = '';
-        clearMaskedEditSelection();
-        addLibraryItem({
-          type: 'image',
-          url: data.edited_image_url,
-          downloadUrl: data.edited_image_url,
-          prompt: `${imageEditWorkspace.dataset.contextPrompt || 'Edited image'} — ${microPrompt}`,
-          createdAt: Date.now()
-        });
-        const workflowLabel = data.workflow === 'openai-image-edit-mask' ? 'OpenAI image edit completed' : data.workflow === 'flux-inpainting-mask' ? 'FLUX inpainting completed' : 'Masked region edited';
-        maskedEditStatus.textContent = `${workflowLabel}; unmasked pixels were preserved and no overlay frame remains.`;
+        finalizeMaskedImageEdit(data, microPrompt);
       } catch (error) {
         maskedEditStatus.textContent = error.message;
       } finally {

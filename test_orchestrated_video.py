@@ -726,8 +726,52 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"generatedImage.src = data.edited_image_url", response.data)
         self.assertIn(b"imageEditPatches.innerHTML = ''", response.data)
         self.assertIn(b"AI inpainting", response.data)
+        self.assertIn(b"pollMaskedEditJob", response.data)
+        self.assertIn(b"/image/edit-region/status/", response.data)
         self.assertNotIn(b"box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.75)", response.data)
 
+    @patch("app.start_image_edit_job")
+    def test_image_edit_region_endpoint_returns_async_job_before_long_provider_call(self, mock_start):
+        mock_start.return_value = "job_test_123"
+
+        response = self.client.post(
+            "/image/edit-region",
+            json={
+                "image_url": "https://example.com/original-apple.jpg",
+                "micro_prompt": "replace the apple with an orange",
+                "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+                "context_prompt": "an apple on a wooden table",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertEqual(payload["job_id"], "job_test_123")
+        self.assertEqual(payload["status"], "queued")
+        self.assertIn("/image/edit-region/status/job_test_123", payload["status_url"])
+        mock_start.assert_called_once()
+
+    def test_image_edit_region_status_endpoint_returns_completed_result(self):
+        app.IMAGE_EDIT_JOBS["job_done"] = {
+            "status": "completed",
+            "result": {"edited_image_url": "https://app.test/final.png", "workflow": "openai-image-edit-mask"},
+            "error": None,
+        }
+
+        response = self.client.get("/image/edit-region/status/job_done")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result"]["edited_image_url"], "https://app.test/final.png")
+
+    def test_image_edit_region_status_endpoint_returns_404_for_unknown_job(self):
+        response = self.client.get("/image/edit-region/status/missing")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("not found", response.get_json()["error"].lower())
+
+    @patch.dict(os.environ, {"IMAGE_EDIT_ASYNC": "false"}, clear=False)
     @patch("app.build_masked_region_edit")
     @patch("app.materialize_openai_image_edit")
     def test_image_edit_region_endpoint_uses_openai_inpainting_by_default(self, mock_openai, mock_edit):
@@ -754,7 +798,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         mock_edit.assert_not_called()
         mock_openai.assert_called_once()
 
-    @patch.dict(os.environ, {"INPAINT_PROVIDER": "fal"}, clear=False)
+    @patch.dict(os.environ, {"INPAINT_PROVIDER": "fal", "IMAGE_EDIT_ASYNC": "false"}, clear=False)
     @patch("app.build_masked_region_edit")
     @patch("app.materialize_flux_inpaint_edit")
     def test_image_edit_region_endpoint_uses_flux_inpainting_when_configured(self, mock_flux, mock_edit):
@@ -784,10 +828,15 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         mock_edit.assert_not_called()
         mock_flux.assert_called_once()
 
+    @patch.dict(os.environ, {"IMAGE_EDIT_ASYNC": "false"}, clear=False)
     @patch("app.build_masked_region_edit")
+    @patch("app.materialize_openai_image_edit")
     @patch("app.materialize_color_recolor_edit")
-    def test_image_edit_region_endpoint_recolors_mask_without_generating_second_object(self, mock_recolor, mock_edit):
-        mock_recolor.return_value = "https://app.test/static/generated/masked-recolor-123.png"
+    def test_image_edit_region_endpoint_uses_openai_for_color_changes(self, mock_recolor, mock_openai, mock_edit):
+        mock_openai.return_value = {
+            "edited_image_url": "https://app.test/static/generated/openai-color-123.png",
+            "inpaint_prompt": "change only the selected apple color to green",
+        }
 
         response = self.client.post(
             "/image/edit-region",
@@ -801,12 +850,13 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["edited_image_url"], mock_recolor.return_value)
-        self.assertEqual(payload["workflow"], "masked-region-color-recolor")
+        self.assertEqual(payload["edited_image_url"], mock_openai.return_value["edited_image_url"])
+        self.assertEqual(payload["workflow"], "openai-image-edit-mask")
         self.assertEqual(payload["target_color"], "green")
         self.assertNotIn("patch_url", payload)
         mock_edit.assert_not_called()
-        mock_recolor.assert_called_once()
+        mock_recolor.assert_not_called()
+        mock_openai.assert_called_once()
 
     def test_image_edit_region_endpoint_requires_micro_prompt(self):
         response = self.client.post(
