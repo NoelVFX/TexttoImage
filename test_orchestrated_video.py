@@ -102,6 +102,53 @@ class PromptRewriteTests(unittest.TestCase):
         self.assertIn("golden hour lighting", rewritten)
         self.assertNotIn("```", rewritten)
 
+    def test_rewrite_prompt_removes_tirith_scanner_warning(self):
+        from PromptRewrite import rewrite_prompt
+
+        def fake_runner(command, **kwargs):
+            class Result:
+                returncode = 0
+                stdout = (
+                    "⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only\n"
+                    "Cinematic close-up of a monkey holding colorful eggs in a lush jungle, warm golden light, low-angle camera, vibrant playful mood, crisp high-detail textures."
+                )
+                stderr = ""
+
+            return Result()
+
+        rewritten = rewrite_prompt(
+            "monkey with eggs",
+            media_type="image",
+            aspect_ratio="1024x1024",
+            runner=fake_runner,
+        )
+
+        self.assertNotIn("tirith", rewritten.lower())
+        self.assertNotIn("security scanner", rewritten.lower())
+        self.assertTrue(rewritten.startswith("Cinematic close-up"))
+
+    def test_rewrite_prompt_limits_overly_long_output(self):
+        from PromptRewrite import rewrite_prompt
+
+        long_prompt = " ".join(f"word{i}" for i in range(90))
+
+        def fake_runner(command, **kwargs):
+            class Result:
+                returncode = 0
+                stdout = long_prompt
+                stderr = ""
+
+            return Result()
+
+        rewritten = rewrite_prompt(
+            "short idea",
+            media_type="video",
+            aspect_ratio="16:9",
+            runner=fake_runner,
+        )
+
+        self.assertLessEqual(len(rewritten.split()), 45)
+
 
 class HermesReviewBackendTests(unittest.TestCase):
     def test_build_hermes_review_command_attaches_image_and_forces_json_friendly_mode(self):

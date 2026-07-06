@@ -10,9 +10,14 @@ from OpenRouterVideo import load_local_env
 
 
 DEFAULT_PROMPT_REWRITE_TIMEOUT = 30
+DEFAULT_PROMPT_REWRITE_MAX_WORDS = 45
 DEFAULT_PROMPT_REWRITE_PROVIDER = "openrouter"
 DEFAULT_PROMPT_REWRITE_MODEL = "openai/gpt-4o-mini"
 SUPPORTED_MEDIA_TYPES = {"image", "video"}
+WARNING_LINE_PATTERNS = (
+    re.compile(r"tirith security scanner", flags=re.IGNORECASE),
+    re.compile(r"command scanning will use pattern matching only", flags=re.IGNORECASE),
+)
 
 
 class PromptRewriteError(RuntimeError):
@@ -51,15 +56,13 @@ def build_prompt_rewrite_prompt(prompt: str, *, media_type: str, aspect_ratio: s
     ratio = (aspect_ratio or "not specified").strip() or "not specified"
     if selected_media_type == "video":
         media_guidance = (
-            "Optimize for text-to-video or image-to-video generation. Add camera movement, subject motion, "
-            "scene progression, cinematic pacing, lighting, lens/angle, depth, mood, environment details, "
-            "quality tags, and optional sound cues when useful. Keep it as one coherent generation prompt."
+            "Optimize for text-to-video or image-to-video generation. Include camera movement, subject motion, "
+            "lighting, angle/lens, mood, environment, quality, and optional sound cues. Keep it punchy."
         )
     else:
         media_guidance = (
-            "Optimize for text-to-image generation. Add composition, camera angle, lens feel, lighting, "
-            "color palette, mood, environment, subject details, texture, depth of field, and quality tags. "
-            "Keep it as one coherent generation prompt."
+            "Optimize for text-to-image generation. Include composition, camera angle, lighting, mood, "
+            "environment, texture, depth of field, and quality. Keep it punchy."
         )
 
     return f"""
@@ -73,9 +76,10 @@ User prompt: {prompt.strip()}
 Requirements:
 - Preserve the user's subject and intent exactly.
 - Add concrete visual details: lighting, camera angle, lens/composition, cinematic style, mood, environment, textures, and quality.
+- Keep it to one short sentence under {DEFAULT_PROMPT_REWRITE_MAX_WORDS} words.
 - Avoid policy/safety commentary, explanations, markdown, bullet lists, JSON, labels, or quotation marks.
 - Return only the rewritten prompt text.
-- Keep it detailed but concise enough to paste directly into an image/video generation model.
+- Do not include warnings, scanner notices, diagnostics, prefixes, or setup messages.
 
 {media_guidance}
 """.strip()
@@ -114,13 +118,27 @@ def build_prompt_rewrite_command(
 
 
 def clean_rewritten_prompt(text: str) -> str:
-    cleaned = text.strip()
+    cleaned = "\n".join(
+        line
+        for line in text.strip().splitlines()
+        if line.strip() and not any(pattern.search(line) for pattern in WARNING_LINE_PATTERNS)
+    ).strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:text|markdown)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
     cleaned = cleaned.strip().strip('"').strip("'").strip()
     cleaned = re.sub(r"^(rewritten prompt|prompt)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
+
+
+def limit_prompt_words(text: str, max_words: int = DEFAULT_PROMPT_REWRITE_MAX_WORDS) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+    shortened = " ".join(words[:max_words]).rstrip(" ,;:")
+    if shortened and shortened[-1] not in ".!?":
+        shortened += "."
+    return shortened
 
 
 def rewrite_prompt(
@@ -154,7 +172,7 @@ def rewrite_prompt(
             f"AI prompt rewrite exited with code {getattr(result, 'returncode', 'unknown')}: {raw[:300]}"
         )
 
-    rewritten = clean_rewritten_prompt(raw)
+    rewritten = limit_prompt_words(clean_rewritten_prompt(raw))
     if not rewritten:
         raise PromptRewriteError("AI prompt rewrite returned an empty prompt.")
     return rewritten
