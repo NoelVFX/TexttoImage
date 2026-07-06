@@ -41,7 +41,9 @@ def build_masked_region_prompt(*, micro_prompt: str, context_prompt: str | None 
     context = (context_prompt or "the original image").strip()
     return (
         f"{micro_prompt.strip()}, isolated replacement patch for the masked region only, "
-        f"matches surrounding perspective and lighting from {context}, background unchanged, seamless edges, high detail"
+        f"same object scale and proportions as the selected element, match surrounding grass, shadows, texture, "
+        f"perspective, color temperature, and lighting from {context}, preserve original background, "
+        "background unchanged outside the box, seamless edges, no shrinking, no style mismatch, high detail"
     )
 
 

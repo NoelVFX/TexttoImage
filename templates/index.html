@@ -311,6 +311,14 @@
       imageMaskBox.classList.remove('hidden');
     };
 
+    const clearMaskedEditSelection = () => {
+      selectedImageMask = null;
+      drawingMask = false;
+      maskStart = null;
+      imageMaskBox.classList.add('hidden');
+      maskedEditPrompt.value = '';
+    };
+
     drawMaskButton?.addEventListener('click', () => {
       drawingMask = true;
       selectedImageMask = null;
@@ -384,6 +392,7 @@
         patch.style.width = `${data.mask.width}px`;
         patch.style.height = `${data.mask.height}px`;
         imageEditPatches.appendChild(patch);
+        clearMaskedEditSelection();
         maskedEditStatus.textContent = 'Masked region edited; background outside the box remains unchanged.';
       } catch (error) {
         maskedEditStatus.textContent = error.message;
@@ -471,6 +480,15 @@
     }
     renderLibrary();
 
+    const resetVideoResult = () => {
+      videoEl.pause();
+      videoEl.classList.add('hidden');
+      videoEl.removeAttribute('src');
+      videoEl.load();
+      videoDownload.classList.add('hidden');
+      videoDownload.href = '#';
+    };
+
     const renderStoryboard = (storyboard) => {
       currentStoryboard = storyboard;
       storyboardGrid.innerHTML = '';
@@ -507,6 +525,7 @@
         return null;
       }
       const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      resetVideoResult();
       createStoryboardButton.disabled = true;
       storyboardStatus.textContent = 'Creating start, middle, and end frames...';
       videoEmpty.classList.add('hidden');
@@ -621,10 +640,7 @@
       videoError.textContent = '';
       videoEmpty.classList.add('hidden');
       videoPanel.classList.remove('hidden');
-      videoEl.classList.add('hidden');
-      videoEl.removeAttribute('src');
-      videoDownload.classList.add('hidden');
-      videoDownload.href = '#';
+      resetVideoResult();
       videoTitle.textContent = 'Building and reviewing free start frame...';
       videoLine.textContent = 'Preparing your prompt, generating a free frame, and running permissive Hermes Agent visual review before the paid I2V call...';
       videoButton.disabled = true;

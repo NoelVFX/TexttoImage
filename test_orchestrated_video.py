@@ -34,6 +34,9 @@ class MaskedImageEditTests(unittest.TestCase):
         self.assertIn("background%20unchanged", result["patch_url"])
         self.assertIn("width=180", result["patch_url"])
         self.assertIn("height=120", result["patch_url"])
+        self.assertIn("same object scale", result["patch_prompt"])
+        self.assertIn("match surrounding grass", result["patch_prompt"])
+        self.assertIn("preserve original background", result["patch_prompt"])
 
 
 class StoryboardGenerationTests(unittest.TestCase):
@@ -494,6 +497,8 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"image-edit-workspace", response.data)
         self.assertIn(b"Apply masked edit", response.data)
         self.assertIn(b"applyMaskedImageEdit", response.data)
+        self.assertIn(b"clearMaskedEditSelection", response.data)
+        self.assertIn(b"imageMaskBox.classList.add('hidden')", response.data)
 
     @patch("app.build_masked_region_edit")
     def test_image_edit_region_endpoint_returns_patch_payload(self, mock_edit):
@@ -553,6 +558,9 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"regenerateStoryboardFrame", response.data)
         self.assertIn(b"Generate video from storyboard", response.data)
         self.assertNotIn(b"Free Pollinations start frame", response.data)
+        self.assertIn(b"resetVideoResult", response.data)
+        self.assertIn(b"videoEl.removeAttribute('src')", response.data)
+        self.assertIn(b"videoDownload.classList.add('hidden')", response.data)
 
     @patch("app.materialize_storyboard_frame")
     @patch("app.build_storyboard_frames")
