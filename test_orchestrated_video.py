@@ -236,6 +236,22 @@ class OpenAIImageEditTests(unittest.TestCase):
         self.assertEqual(session.calls[0][3]["image"][0], "image.png")
 
 
+    def test_openai_api_key_loads_local_env_file_and_common_aliases(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import OpenAIImageEdit
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("OpenAI_API_KEY=alias_key\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                key = OpenAIImageEdit.openai_api_key(env_path=env_path)
+
+        self.assertEqual(key, "alias_key")
+
+
 class FluxInpaintTests(unittest.TestCase):
     def test_build_flux_inpaint_payload_uses_original_image_mask_and_prompt(self):
         from FluxInpaint import build_flux_inpaint_payload

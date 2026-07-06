@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -16,9 +17,25 @@ class OpenAIImageEditError(RuntimeError):
     """Raised when OpenAI image editing cannot return an edited image."""
 
 
-def openai_api_key() -> str | None:
-    key = os.getenv("OPENAI_API_KEY")
-    return key.strip() if key and key.strip() else None
+def _load_local_env(path: str | Path | None = None) -> None:
+    env_path = Path(path) if path is not None else Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def openai_api_key(*, env_path: str | Path | None = None) -> str | None:
+    _load_local_env(env_path)
+    for name in ("OPENAI_API_KEY", "OpenAI_API_KEY", "OPENAI_KEY"):
+        key = os.getenv(name)
+        if key and key.strip():
+            return key.strip()
+    return None
 
 
 def build_openai_image_edit_files(image_bytes: bytes, mask_bytes: bytes) -> dict[str, tuple[str, bytes, str]]:
