@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
 
+from ImageEdit import ImageEditError, build_masked_region_edit
 from OpenRouterVideo import (
     DEFAULT_VIDEO_ASPECT_RATIO,
     DEFAULT_VIDEO_DURATION,
@@ -154,6 +155,40 @@ def rewrite_generation_prompt():
             "aspect_ratio": aspect_ratio,
         }
     )
+
+
+@app.post("/image/edit-region")
+def edit_image_region():
+    payload = request.get_json(silent=True) or request.form
+    image_url = (payload.get("image_url") or "").strip()
+    micro_prompt = (payload.get("micro_prompt") or payload.get("prompt") or "").strip()
+    context_prompt = (payload.get("context_prompt") or "").strip() or None
+    mask = payload.get("mask") or {}
+
+    if not image_url:
+        return jsonify({"error": "Image URL is required before editing a masked region."}), 400
+    if not micro_prompt:
+        return jsonify({"error": "Please enter a micro-prompt for the masked region."}), 400
+    if not isinstance(mask, dict):
+        return jsonify({"error": "A mask box is required before editing a region."}), 400
+
+    try:
+        edit_payload = build_masked_region_edit(
+            image_url=image_url,
+            micro_prompt=micro_prompt,
+            mask=mask,
+            context_prompt=context_prompt,
+            model_choice=DEFAULT_MODEL,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ImageEditError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        app.logger.exception("Unexpected error while editing masked image region")
+        return jsonify({"error": "Masked image edit failed.", "detail": str(exc)}), 500
+
+    return jsonify(edit_payload)
 
 
 @app.post("/generate")

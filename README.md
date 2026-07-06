@@ -10,6 +10,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
   - `1024x1024` / 1:1 square
   - `1792x1024` / 16:9 widescreen
 - Generated image preview on the same page
+- Masked image editing: draw a box over a specific element, type a micro-prompt, and overlay an edited patch while the rest of the image stays unchanged
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips

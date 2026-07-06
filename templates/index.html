@@ -59,7 +59,17 @@
             </div>
             <a class="download-button" href="{{ download_url }}" target="_blank" rel="noopener" download="generated-image.jpg">Download</a>
           </div>
-          <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+          <div class="image-edit-workspace" id="image-edit-workspace" data-image-url="{{ image_url }}" data-context-prompt="{{ prompt }}">
+            <img class="generated-image" id="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+            <div class="image-mask-box hidden" id="image-mask-box"></div>
+            <div class="image-edit-patches" id="image-edit-patches"></div>
+          </div>
+          <div class="image-edit-controls">
+            <button type="button" class="secondary-button" id="draw-mask-button">Draw mask box</button>
+            <input type="text" id="masked-edit-prompt" placeholder="Micro-prompt for selected region, e.g. open this door" aria-label="Masked region edit prompt">
+            <button type="button" class="secondary-button" id="apply-masked-edit">Apply masked edit</button>
+            <span class="prompt-rewrite-status" id="masked-edit-status" aria-live="polite"></span>
+          </div>
         {% else %}
           <div class="empty-state">
             <div class="empty-icon">✦</div>
@@ -168,6 +178,16 @@
     const imagePrompt = document.getElementById('prompt');
     const imageRewriteButton = document.getElementById('rewrite-image-prompt');
     const imageRewriteStatus = document.getElementById('image-rewrite-status');
+    const imageEditWorkspace = document.getElementById('image-edit-workspace');
+    const imageMaskBox = document.getElementById('image-mask-box');
+    const imageEditPatches = document.getElementById('image-edit-patches');
+    const drawMaskButton = document.getElementById('draw-mask-button');
+    const maskedEditPrompt = document.getElementById('masked-edit-prompt');
+    const applyMaskedEditButton = document.getElementById('apply-masked-edit');
+    const maskedEditStatus = document.getElementById('masked-edit-status');
+    let selectedImageMask = null;
+    let drawingMask = false;
+    let maskStart = null;
     imageForm?.addEventListener('submit', () => {
       imageButton.disabled = true;
       imageButton.textContent = 'Generating...';
@@ -272,6 +292,107 @@
         statusEl: videoRewriteStatus
       });
     });
+
+    const workspacePoint = (event) => {
+      const rect = imageEditWorkspace.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(event.clientX - rect.left, rect.width)),
+        y: Math.max(0, Math.min(event.clientY - rect.top, rect.height)),
+        rect
+      };
+    };
+
+    const drawMask = (mask) => {
+      if (!imageMaskBox || !mask) return;
+      imageMaskBox.style.left = `${mask.x}px`;
+      imageMaskBox.style.top = `${mask.y}px`;
+      imageMaskBox.style.width = `${mask.width}px`;
+      imageMaskBox.style.height = `${mask.height}px`;
+      imageMaskBox.classList.remove('hidden');
+    };
+
+    drawMaskButton?.addEventListener('click', () => {
+      drawingMask = true;
+      selectedImageMask = null;
+      imageMaskBox?.classList.add('hidden');
+      maskedEditStatus.textContent = 'Drag a box over the element you want to edit.';
+    });
+
+    imageEditWorkspace?.addEventListener('pointerdown', (event) => {
+      if (!drawingMask) return;
+      event.preventDefault();
+      const point = workspacePoint(event);
+      maskStart = { x: point.x, y: point.y };
+      selectedImageMask = { x: point.x, y: point.y, width: 1, height: 1, image_width: Math.round(point.rect.width), image_height: Math.round(point.rect.height) };
+      drawMask(selectedImageMask);
+    });
+
+    imageEditWorkspace?.addEventListener('pointermove', (event) => {
+      if (!drawingMask || !maskStart) return;
+      const point = workspacePoint(event);
+      selectedImageMask = {
+        x: Math.round(Math.min(maskStart.x, point.x)),
+        y: Math.round(Math.min(maskStart.y, point.y)),
+        width: Math.max(1, Math.round(Math.abs(point.x - maskStart.x))),
+        height: Math.max(1, Math.round(Math.abs(point.y - maskStart.y))),
+        image_width: Math.round(point.rect.width),
+        image_height: Math.round(point.rect.height)
+      };
+      drawMask(selectedImageMask);
+    });
+
+    imageEditWorkspace?.addEventListener('pointerup', () => {
+      if (!drawingMask) return;
+      drawingMask = false;
+      maskStart = null;
+      maskedEditStatus.textContent = 'Mask selected. Add a micro-prompt and apply the edit.';
+    });
+
+    const applyMaskedImageEdit = async () => {
+      if (!imageEditWorkspace || !selectedImageMask) {
+        maskedEditStatus.textContent = 'Draw a mask box first.';
+        return;
+      }
+      const microPrompt = maskedEditPrompt.value.trim();
+      if (!microPrompt) {
+        maskedEditStatus.textContent = 'Enter a micro-prompt for the masked region.';
+        return;
+      }
+      applyMaskedEditButton.disabled = true;
+      maskedEditStatus.textContent = 'Generating replacement patch...';
+      try {
+        const response = await fetch('/image/edit-region', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url: imageEditWorkspace.dataset.imageUrl,
+            context_prompt: imageEditWorkspace.dataset.contextPrompt,
+            micro_prompt: microPrompt,
+            mask: selectedImageMask
+          })
+        });
+        const data = await parseJsonResponse(response, 'Masked image edit failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Masked image edit failed.');
+        }
+        const patch = document.createElement('img');
+        patch.className = 'image-edit-patch';
+        patch.src = data.patch_url;
+        patch.alt = `Edited region: ${microPrompt}`;
+        patch.style.left = `${data.mask.x}px`;
+        patch.style.top = `${data.mask.y}px`;
+        patch.style.width = `${data.mask.width}px`;
+        patch.style.height = `${data.mask.height}px`;
+        imageEditPatches.appendChild(patch);
+        maskedEditStatus.textContent = 'Masked region edited; background outside the box remains unchanged.';
+      } catch (error) {
+        maskedEditStatus.textContent = error.message;
+      } finally {
+        applyMaskedEditButton.disabled = false;
+      }
+    };
+
+    applyMaskedEditButton?.addEventListener('click', () => applyMaskedImageEdit());
 
     const readLibraryItems = () => {
       try {

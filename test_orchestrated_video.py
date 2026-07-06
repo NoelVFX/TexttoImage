@@ -10,6 +10,32 @@ import app
 from TexttoImage import build_pollinations_url
 
 
+class MaskedImageEditTests(unittest.TestCase):
+    def test_normalise_mask_box_clamps_and_rounds_values(self):
+        from ImageEdit import normalise_mask_box
+
+        box = normalise_mask_box({"x": -4, "y": 10.6, "width": 120.2, "height": 0}, image_width=300, image_height=200)
+
+        self.assertEqual(box, {"x": 0, "y": 11, "width": 120, "height": 1})
+
+    def test_build_masked_region_edit_returns_patch_url_and_preserves_mask(self):
+        from ImageEdit import build_masked_region_edit
+
+        result = build_masked_region_edit(
+            image_url="https://example.com/original.jpg",
+            micro_prompt="open this door",
+            mask={"x": 20, "y": 30, "width": 180, "height": 120},
+            context_prompt="a blue house with a closed red door",
+        )
+
+        self.assertEqual(result["mask"]["width"], 180)
+        self.assertEqual(result["mask"]["height"], 120)
+        self.assertIn("open%20this%20door", result["patch_url"])
+        self.assertIn("background%20unchanged", result["patch_url"])
+        self.assertIn("width=180", result["patch_url"])
+        self.assertIn("height=120", result["patch_url"])
+
+
 class StoryboardGenerationTests(unittest.TestCase):
     def test_build_storyboard_frames_returns_start_middle_end_frames(self):
         from Storyboard import build_storyboard_frames
@@ -459,6 +485,49 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"session-library-grid", response.data)
         self.assertIn(b"sessionStorage", response.data)
         self.assertIn(b"addLibraryItem", response.data)
+
+    def test_generated_image_result_includes_masked_edit_controls(self):
+        response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Draw mask box", response.data)
+        self.assertIn(b"image-edit-workspace", response.data)
+        self.assertIn(b"Apply masked edit", response.data)
+        self.assertIn(b"applyMaskedImageEdit", response.data)
+
+    @patch("app.build_masked_region_edit")
+    def test_image_edit_region_endpoint_returns_patch_payload(self, mock_edit):
+        mock_edit.return_value = {
+            "patch_url": "https://image.pollinations.ai/p/open-door?width=120&height=80",
+            "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+            "image_url": "https://example.com/original.jpg",
+            "micro_prompt": "open this door",
+        }
+
+        response = self.client.post(
+            "/image/edit-region",
+            json={
+                "image_url": "https://example.com/original.jpg",
+                "micro_prompt": "open this door",
+                "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+                "context_prompt": "a blue house",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["patch_url"], mock_edit.return_value["patch_url"])
+        self.assertEqual(payload["mask"]["width"], 120)
+        mock_edit.assert_called_once()
+
+    def test_image_edit_region_endpoint_requires_micro_prompt(self):
+        response = self.client.post(
+            "/image/edit-region",
+            json={"image_url": "https://example.com/original.jpg", "micro_prompt": "", "mask": {"width": 1, "height": 1}},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("micro-prompt", response.get_json()["error"])
 
     def test_index_includes_video_audio_toggle(self):
         response = self.client.get("/")
