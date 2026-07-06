@@ -18,6 +18,7 @@ from OpenRouterVideo import (
     submit_video_job,
 )
 from OrchestratedVideo import VideoOrchestrationError, orchestrate_video_first_frame
+from PromptRewrite import PromptRewriteError, rewrite_prompt
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -68,6 +69,38 @@ def index():
 @app.get("/generate")
 def generate_form_redirect():
     return render_index()
+
+
+@app.post("/prompt/rewrite")
+def rewrite_generation_prompt():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    media_type = (payload.get("media_type") or "image").strip().lower()
+    aspect_ratio = (payload.get("aspect_ratio") or "").strip() or None
+
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before rewriting it."}), 400
+    if media_type not in {"image", "video"}:
+        media_type = "image"
+
+    try:
+        rewritten = rewrite_prompt(prompt, media_type=media_type, aspect_ratio=aspect_ratio)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except PromptRewriteError as exc:
+        return jsonify({"error": str(exc)}), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected error while rewriting prompt")
+        return jsonify({"error": "Prompt rewrite failed.", "detail": str(exc)}), 500
+
+    return jsonify(
+        {
+            "original_prompt": prompt,
+            "rewritten_prompt": rewritten,
+            "media_type": media_type,
+            "aspect_ratio": aspect_ratio,
+        }
+    )
 
 
 @app.post("/generate")

@@ -53,6 +53,56 @@ class PollinationsUrlTests(unittest.TestCase):
         self.assertIn("model=turbo", mock_get.call_args_list[1].args[0])
 
 
+class PromptRewriteTests(unittest.TestCase):
+    def test_build_prompt_rewrite_command_uses_hermes_quiet_one_shot(self):
+        from PromptRewrite import build_prompt_rewrite_command
+
+        command = build_prompt_rewrite_command(
+            "A castle on a mountain",
+            media_type="image",
+            aspect_ratio="1792x1024",
+            provider="openrouter",
+            model="openai/gpt-4o-mini",
+        )
+
+        self.assertEqual(command[:3], ["hermes", "chat", "-Q"])
+        self.assertIn("--ignore-rules", command)
+        self.assertIn("--ignore-user-config", command)
+        self.assertIn("--source", command)
+        self.assertIn("tool", command)
+        self.assertIn("--max-turns", command)
+        self.assertIn("1", command)
+        self.assertIn("--provider", command)
+        self.assertIn("openrouter", command)
+        self.assertIn("-m", command)
+        self.assertIn("openai/gpt-4o-mini", command)
+        self.assertEqual(command[-2], "-q")
+        self.assertIn("lighting", command[-1].lower())
+        self.assertIn("camera", command[-1].lower())
+        self.assertIn("A castle on a mountain", command[-1])
+
+    def test_rewrite_prompt_returns_clean_ai_text(self):
+        from PromptRewrite import rewrite_prompt
+
+        def fake_runner(command, **kwargs):
+            class Result:
+                returncode = 0
+                stdout = "```\nCinematic wide shot of a castle on a mountain, golden hour lighting, detailed stonework, dramatic clouds, ultra high quality.\n```"
+                stderr = ""
+
+            return Result()
+
+        rewritten = rewrite_prompt(
+            "castle",
+            media_type="image",
+            aspect_ratio="1792x1024",
+            runner=fake_runner,
+        )
+
+        self.assertIn("golden hour lighting", rewritten)
+        self.assertNotIn("```", rewritten)
+
+
 class HermesReviewBackendTests(unittest.TestCase):
     def test_build_hermes_review_command_attaches_image_and_forces_json_friendly_mode(self):
         from OrchestratedVideo import build_hermes_review_command
@@ -329,6 +379,36 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'name="generate_audio"', response.data)
         self.assertIn(b"Add AI-generated audio", response.data)
+
+    def test_index_includes_prompt_rewrite_buttons(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Rewrite image prompt", response.data)
+        self.assertIn(b"Rewrite video prompt", response.data)
+        self.assertIn(b"rewritePrompt", response.data)
+
+    @patch("app.rewrite_prompt")
+    def test_prompt_rewrite_endpoint_returns_rewritten_prompt(self, mock_rewrite):
+        mock_rewrite.return_value = "Cinematic macro shot of gold coins, warm studio lighting, crisp details."
+
+        response = self.client.post(
+            "/prompt/rewrite",
+            json={"prompt": "gold coins", "media_type": "image", "aspect_ratio": "1024x1024"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["original_prompt"], "gold coins")
+        self.assertEqual(payload["rewritten_prompt"], mock_rewrite.return_value)
+        self.assertEqual(payload["media_type"], "image")
+        mock_rewrite.assert_called_once_with("gold coins", media_type="image", aspect_ratio="1024x1024")
+
+    def test_prompt_rewrite_endpoint_requires_prompt(self):
+        response = self.client.post("/prompt/rewrite", json={"prompt": "", "media_type": "video"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Please enter a prompt", response.get_json()["error"])
 
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")

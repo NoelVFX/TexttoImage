@@ -5,6 +5,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 ## Features
 
 - Text-to-image prompt input in the browser
+- AI prompt rewrite buttons for image and video prompts, adding lighting, camera angle, cinematic style, detail, and quality terms before generation
 - Image aspect ratio selector:
   - `1024x1024` / 1:1 square
   - `1792x1024` / 16:9 widescreen
@@ -46,6 +47,8 @@ Optional variables:
 - `POLLINATIONS_TOKEN` - token from https://auth.pollinations.ai for higher Pollinations limits
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`
+- `PROMPT_REWRITE_PROVIDER` and `PROMPT_REWRITE_MODEL` - provider/model override for the Hermes AI prompt rewrite subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`
+- `PROMPT_REWRITE_TIMEOUT` - seconds to wait for AI prompt rewriting; default `30`
 - `HERMES_REVIEW_PROVIDER` and `HERMES_REVIEW_MODEL` - provider/model override for the Hermes review subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`
 - `VIDEO_ORCHESTRATOR_PROMPT_OPTIMIZER=hermes` - optionally asks Hermes to optimize the text prompt too; default `local`
 - `VIDEO_ORCHESTRATOR_MAX_ATTEMPTS` - number of free-frame review attempts per request; default `1` for web timeout safety

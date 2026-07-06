@@ -24,6 +24,10 @@
         <form class="generator-form image-generator-form" method="post" action="{{ url_for('generate') }}">
           <label for="prompt">Prompt</label>
           <textarea id="prompt" name="prompt" rows="5" placeholder="A cinematic photo of a glass greenhouse on Mars at sunset" required>{{ prompt }}</textarea>
+          <div class="prompt-tools">
+            <button type="button" class="secondary-button prompt-rewrite-button" id="rewrite-image-prompt">Rewrite image prompt</button>
+            <span class="prompt-rewrite-status" id="image-rewrite-status" aria-live="polite"></span>
+          </div>
 
           <fieldset>
             <legend>Aspect ratio</legend>
@@ -77,6 +81,10 @@
         <form class="generator-form video-generator-form" id="video-form">
           <label for="video-prompt">Video prompt</label>
           <textarea id="video-prompt" name="prompt" rows="5" placeholder="A slow cinematic drone shot over a neon cyberpunk city in the rain" required>{{ video_prompt }}</textarea>
+          <div class="prompt-tools">
+            <button type="button" class="secondary-button prompt-rewrite-button" id="rewrite-video-prompt">Rewrite video prompt</button>
+            <span class="prompt-rewrite-status" id="video-rewrite-status" aria-live="polite"></span>
+          </div>
 
           <fieldset>
             <legend>Aspect ratio</legend>
@@ -152,6 +160,9 @@
   <script>
     const imageForm = document.querySelector('.image-generator-form');
     const imageButton = document.getElementById('generate-button');
+    const imagePrompt = document.getElementById('prompt');
+    const imageRewriteButton = document.getElementById('rewrite-image-prompt');
+    const imageRewriteStatus = document.getElementById('image-rewrite-status');
     imageForm?.addEventListener('submit', () => {
       imageButton.disabled = true;
       imageButton.textContent = 'Generating...';
@@ -159,6 +170,9 @@
 
     const videoForm = document.getElementById('video-form');
     const videoButton = document.getElementById('video-generate-button');
+    const videoPrompt = document.getElementById('video-prompt');
+    const videoRewriteButton = document.getElementById('rewrite-video-prompt');
+    const videoRewriteStatus = document.getElementById('video-rewrite-status');
     const videoError = document.getElementById('video-error');
     const videoEmpty = document.getElementById('video-empty-state');
     const videoPanel = document.getElementById('video-status-panel');
@@ -196,6 +210,60 @@
         throw new Error(`${fallbackMessage} Server returned non-JSON response (${response.status}): ${preview || response.statusText}`);
       }
     };
+
+    const rewritePrompt = async ({ textarea, mediaType, aspectRatio, button, statusEl }) => {
+      const prompt = textarea.value.trim();
+      if (!prompt) {
+        statusEl.textContent = 'Enter a prompt first.';
+        return;
+      }
+
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Rewriting...';
+      statusEl.textContent = 'Asking AI prompt engineer...';
+
+      try {
+        const response = await fetch('/prompt/rewrite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, media_type: mediaType, aspect_ratio: aspectRatio })
+        });
+        const data = await parseJsonResponse(response, 'Prompt rewrite failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Prompt rewrite failed.');
+        }
+        textarea.value = data.rewritten_prompt || prompt;
+        statusEl.textContent = 'Prompt rewritten with lighting, camera, cinematic, and quality details.';
+      } catch (error) {
+        statusEl.textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    };
+
+    imageRewriteButton?.addEventListener('click', () => {
+      const selectedRatio = imageForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '1024x1024';
+      rewritePrompt({
+        textarea: imagePrompt,
+        mediaType: 'image',
+        aspectRatio: selectedRatio,
+        button: imageRewriteButton,
+        statusEl: imageRewriteStatus
+      });
+    });
+
+    videoRewriteButton?.addEventListener('click', () => {
+      const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      rewritePrompt({
+        textarea: videoPrompt,
+        mediaType: 'video',
+        aspectRatio: selectedRatio,
+        button: videoRewriteButton,
+        statusEl: videoRewriteStatus
+      });
+    });
 
     const readLibraryItems = () => {
       try {
