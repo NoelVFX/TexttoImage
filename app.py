@@ -8,8 +8,18 @@ import uuid
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session
 
+from AuthService import (
+    authenticate_user,
+    create_user,
+    ensure_auth_indexes,
+    get_user_by_id,
+    list_generation_history,
+    record_generation_history,
+    serialize_user,
+)
+from Database import get_database
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
 from ImageEdit import (
@@ -44,6 +54,14 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
+
+APP_DB = get_database()
+if APP_DB is not None:
+    try:
+        ensure_auth_indexes(APP_DB)
+    except Exception:
+        app.logger.exception("Failed to create MongoDB auth indexes")
 
 IMAGE_EDIT_JOBS: dict[str, dict] = {}
 IMAGE_EDIT_JOBS_LOCK = threading.Lock()
@@ -257,6 +275,90 @@ def index():
 @app.get("/generate")
 def generate_form_redirect():
     return render_index()
+
+
+def current_db():
+    return APP_DB
+
+
+def require_db():
+    db = current_db()
+    if db is None:
+        return None, (jsonify({"error": "MongoDB database is not configured. Set MONGODB_URI and MONGODB_PASSWORD."}), 503)
+    return db, None
+
+
+def current_user_id() -> str | None:
+    user_id = session.get("user_id")
+    return str(user_id) if user_id else None
+
+
+def current_user():
+    user_id = current_user_id()
+    db = current_db()
+    if not user_id or db is None:
+        return None
+    return get_user_by_id(db, user_id)
+
+
+@app.post("/auth/register")
+def register_user():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or request.form
+    try:
+        user = create_user(
+            db,
+            email=payload.get("email", ""),
+            password=payload.get("password", ""),
+            display_name=payload.get("display_name") or payload.get("name"),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Could not create user. The email may already be registered.", "detail": str(exc)}), 409
+    session["user_id"] = str(user.get("_id"))
+    return jsonify({"user": serialize_user(user)}), 201
+
+
+@app.post("/auth/login")
+def login_user():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or request.form
+    user = authenticate_user(db, payload.get("email", ""), payload.get("password", ""))
+    if not user:
+        return jsonify({"error": "Invalid email or password."}), 401
+    session["user_id"] = str(user.get("_id"))
+    return jsonify({"user": serialize_user(user)})
+
+
+@app.post("/auth/logout")
+def logout_user():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.get("/auth/me")
+def auth_me():
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Not logged in."}), 401
+    return jsonify({"user": serialize_user(user)})
+
+
+@app.get("/auth/history")
+def auth_history():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in."}), 401
+    limit = max(1, min(100, int(request.args.get("limit", "50"))))
+    return jsonify({"items": list_generation_history(db, user_id=user_id, limit=limit)})
 
 
 @app.post("/prompt/rewrite")
@@ -496,6 +598,21 @@ def generate():
         height=height,
         seed=stable_generation_seed(prompt, selected_ratio),
     )
+
+    db = current_db()
+    user_id = current_user_id()
+    if db is not None and user_id:
+        try:
+            record_generation_history(
+                db,
+                user_id=user_id,
+                media_type="image",
+                prompt=prompt,
+                result_url=image_url,
+                metadata={"aspect_ratio": selected_ratio, "width": width, "height": height, "provider": "pollinations"},
+            )
+        except Exception:
+            app.logger.exception("Failed to record image generation history")
 
     return render_index(
         selected_ratio=selected_ratio,

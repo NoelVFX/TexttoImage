@@ -13,6 +13,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - OpenAI image-edit masked edits: draw a box over a specific element, type a micro-prompt, and the app uploads the source image plus alpha mask so OpenAI edits only the selected area while preserving unmasked pixels
 - Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
 - Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
+- User auth API backed by MongoDB: register, login, logout, current user, and per-user generation history
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips
@@ -31,10 +32,12 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 
 ## Environment
 
-Video generation requires an OpenRouter API key. OpenAI image edits for masked replacement edits require an OpenAI API key. The free-frame visual review uses your local Hermes Agent CLI, so Hermes must be installed and configured with a vision-capable model/provider.
+Video generation requires an OpenRouter API key. OpenAI image edits for masked replacement edits require an OpenAI API key. User login/history requires MongoDB. The free-frame visual review uses your local Hermes Agent CLI, so Hermes must be installed and configured with a vision-capable model/provider.
 
 ```bash
 cp .env.example .env
+# edit .env and set MONGODB_URI and MONGODB_PASSWORD for user accounts/history
+# edit .env and set FLASK_SECRET_KEY to a long random string for sessions
 # edit .env and set OPENROUTER_API_KEY for video generation
 # edit .env and set OPENAI_API_KEY for OpenAI masked image edits
 # optional: set FAL_KEY or FAL_API_KEY and INPAINT_PROVIDER=fal for FLUX/Fal.ai inpainting
@@ -46,6 +49,10 @@ hermes doctor
 
 Optional variables:
 
+- `MONGODB_URI` - MongoDB Atlas connection URI; can contain `<db_password>` placeholder
+- `MONGODB_PASSWORD` - password used to replace `<db_password>` in `MONGODB_URI`
+- `MONGODB_DB` - database name; defaults to `tti_app`
+- `FLASK_SECRET_KEY` - long random string used to sign login sessions
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
@@ -114,6 +121,8 @@ git push -u origin main
 ## Project files
 
 - `app.py` - Flask routes and web UI/API integration
+- `Database.py` - MongoDB URI/env loading and database connection helper
+- `AuthService.py` - user registration/login/password hashing and generation history helpers
 - `TexttoImage.py` - Pollinations image generation helper
 - `ImageEdit.py` - masked edit helpers for OpenAI/Fal masks, legacy composites, and deterministic recolors
 - `OpenAIImageEdit.py` - OpenAI Images Edit client for uploading source image + alpha mask

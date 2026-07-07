@@ -10,6 +10,105 @@ import app
 from TexttoImage import build_pollinations_url
 
 
+class FakeInsertResult:
+    def __init__(self, inserted_id):
+        self.inserted_id = inserted_id
+
+
+class FakeUpdateResult:
+    modified_count = 1
+
+
+class FakeCollection:
+    def __init__(self):
+        self.items = []
+        self.unique_indexes = []
+
+    def create_index(self, field, unique=False):
+        self.unique_indexes.append((field, unique))
+
+    def insert_one(self, document):
+        if "_id" not in document:
+            document = {**document, "_id": f"id_{len(self.items) + 1}"}
+        for field, unique in self.unique_indexes:
+            if unique and any(item.get(field) == document.get(field) for item in self.items):
+                raise ValueError("duplicate key")
+        self.items.append(document.copy())
+        return FakeInsertResult(document["_id"])
+
+    def find_one(self, query):
+        for item in self.items:
+            if all(item.get(key) == value for key, value in query.items()):
+                return item.copy()
+        return None
+
+    def find(self, query):
+        matches = [item.copy() for item in self.items if all(item.get(key) == value for key, value in query.items())]
+        class Cursor(list):
+            def sort(self, *_args, **_kwargs):
+                return self
+            def limit(self, count):
+                return Cursor(self[:count])
+        return Cursor(matches)
+
+    def update_one(self, query, update):
+        for item in self.items:
+            if all(item.get(key) == value for key, value in query.items()):
+                item.update(update.get("$set", {}))
+                return FakeUpdateResult()
+        return FakeUpdateResult()
+
+
+class FakeDatabase(dict):
+    def __getitem__(self, name):
+        if name not in self:
+            self[name] = FakeCollection()
+        return dict.__getitem__(self, name)
+
+
+class DatabaseConfigTests(unittest.TestCase):
+    def test_build_mongo_uri_interpolates_password_placeholder(self):
+        from Database import build_mongo_uri
+
+        uri = build_mongo_uri(
+            "mongo://user:__PASSWORD__@host/db",
+            password="secret pass",
+        )
+
+        self.assertIn("secret+pass", uri)
+        self.assertNotIn("<db_password>", uri)
+
+
+class AuthServiceTests(unittest.TestCase):
+    def test_create_and_authenticate_user_hashes_password(self):
+        from AuthService import authenticate_user, create_user, ensure_auth_indexes
+
+        db = FakeDatabase()
+        ensure_auth_indexes(db)
+        user = create_user(db, email="Test@Example.com", password="safe-password", display_name="Test User")
+
+        self.assertEqual(user["email"], "test@example.com")
+        self.assertNotEqual(db["users"].items[0]["password_hash"], "safe-password")
+        self.assertIsNotNone(authenticate_user(db, "test@example.com", "safe-password"))
+        self.assertIsNone(authenticate_user(db, "test@example.com", "wrong"))
+
+    def test_record_generation_history_stores_user_prompt_and_result(self):
+        from AuthService import record_generation_history
+
+        db = FakeDatabase()
+        history = record_generation_history(
+            db,
+            user_id="user_1",
+            media_type="image",
+            prompt="a red apple",
+            result_url="https://example.com/apple.png",
+            metadata={"aspect_ratio": "1024x1024"},
+        )
+
+        self.assertEqual(history["user_id"], "user_1")
+        self.assertEqual(db["generation_history"].items[0]["result_url"], "https://example.com/apple.png")
+
+
 class MaskedImageEditTests(unittest.TestCase):
     def test_normalise_mask_box_clamps_and_rounds_values(self):
         from ImageEdit import normalise_mask_box
@@ -706,12 +805,67 @@ class HermesReviewBackendTests(unittest.TestCase):
 class VideoOrchestrationRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = app.app.test_client()
+        self.original_db = getattr(app, "APP_DB", None)
+        app.APP_DB = None
+        with self.client.session_transaction() as session:
+            session.clear()
+
+    def tearDown(self):
+        app.APP_DB = self.original_db
 
     def test_get_generate_renders_index_instead_of_html_method_error(self):
         response = self.client.get("/generate")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Generate images and videos from prompts", response.data)
+
+    def test_auth_register_login_me_and_logout_use_mongodb_backing_store(self):
+        app.APP_DB = FakeDatabase()
+
+        register = self.client.post(
+            "/auth/register",
+            json={"email": "User@Example.com", "password": "safe-password", "display_name": "User"},
+        )
+        self.assertEqual(register.status_code, 201)
+        self.assertEqual(register.get_json()["user"]["email"], "user@example.com")
+        self.assertNotIn("password_hash", register.get_json()["user"])
+
+        me = self.client.get("/auth/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.get_json()["user"]["email"], "user@example.com")
+
+        self.client.post("/auth/logout")
+        failed_me = self.client.get("/auth/me")
+        self.assertEqual(failed_me.status_code, 401)
+
+        login = self.client.post("/auth/login", json={"email": "user@example.com", "password": "safe-password"})
+        self.assertEqual(login.status_code, 200)
+        self.assertEqual(login.get_json()["user"]["display_name"], "User")
+
+    def test_generate_records_image_history_for_logged_in_user(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "history@example.com", "password": "safe-password", "display_name": "History"},
+        )
+
+        response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+
+        self.assertEqual(response.status_code, 200)
+        history = self.client.get("/auth/history")
+        self.assertEqual(history.status_code, 200)
+        items = history.get_json()["items"]
+        self.assertEqual(items[0]["media_type"], "image")
+        self.assertEqual(items[0]["prompt"], "a blue house")
+        self.assertIn("image.pollinations.ai", items[0]["result_url"])
+
+    def test_auth_routes_return_503_when_database_not_configured(self):
+        app.APP_DB = None
+
+        response = self.client.post("/auth/login", json={"email": "user@example.com", "password": "pw"})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("database", response.get_json()["error"].lower())
 
     def test_generate_uses_stable_seed_so_server_side_edits_use_same_original(self):
         response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
