@@ -272,6 +272,7 @@ def render_index(**overrides):
         "video_error": None,
         "default_video_duration": DEFAULT_VIDEO_DURATION,
         "default_generate_audio": False,
+        "is_logged_in": bool(current_user_id()) if has_request_context() else False,
     }
     context.update(overrides)
     return render_template("index.html", **context)

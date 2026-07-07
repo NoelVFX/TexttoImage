@@ -111,6 +111,11 @@ def record_generation_history(
     result_url: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    existing = db["generation_history"].find_one(
+        {"user_id": str(user_id), "media_type": media_type, "result_url": result_url}
+    )
+    if existing:
+        return existing
     now = utc_now()
     document = {
         "user_id": str(user_id),

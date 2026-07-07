@@ -123,8 +123,32 @@ class AuthServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(history["user_id"], "user_1")
+        self.assertEqual(history["prompt"], "a red apple")
         self.assertEqual(db["generation_history"].items[0]["result_url"], "https://example.com/apple.png")
 
+    def test_record_generation_history_dedupes_same_user_media_and_url(self):
+        from AuthService import record_generation_history
+
+        db = FakeDatabase()
+        first = record_generation_history(
+            db,
+            user_id="user_1",
+            media_type="image",
+            prompt="a red apple",
+            result_url="https://example.com/apple.png",
+            metadata={"aspect_ratio": "1024x1024"},
+        )
+        second = record_generation_history(
+            db,
+            user_id="user_1",
+            media_type="image",
+            prompt="a red apple",
+            result_url="https://example.com/apple.png",
+            metadata={"aspect_ratio": "1024x1024"},
+        )
+
+        self.assertEqual(first["_id"], second["_id"])
+        self.assertEqual(len(db["generation_history"].items), 1)
 
 class MaskedImageEditTests(unittest.TestCase):
     def test_normalise_mask_box_clamps_and_rounds_values(self):
@@ -876,6 +900,22 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(items[0]["prompt"], "a blue house")
         self.assertIn("image.pollinations.ai", items[0]["result_url"])
 
+    def test_refreshing_generated_page_does_not_duplicate_same_history_item(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "refresh@example.com", "password": "safe-password", "display_name": "Refresh"},
+        )
+
+        first = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+        refresh = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(refresh.status_code, 200)
+        history = self.client.get("/auth/history")
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(len(history.get_json()["items"]), 1)
+
     def test_auth_routes_return_503_when_database_not_configured(self):
         app.APP_DB = None
 
@@ -906,10 +946,27 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"Account", response.data)
         self.assertIn(b"id=\"login-form\"", response.data)
         self.assertIn(b"id=\"register-form\"", response.data)
+        self.assertIn(b"id=\"google-login-row\"", response.data)
         self.assertIn(b"href=\"/auth/google\"", response.data)
         self.assertIn(b"id=\"account-history-grid\"", response.data)
         self.assertIn(b"loadCurrentUser", response.data)
         self.assertIn(b"renderAccountHistory", response.data)
+        self.assertIn(b"setAuthenticatedContentVisible", response.data)
+        self.assertIn(b"authenticated-content hidden", response.data)
+        self.assertIn(b"googleLoginRow?.classList.toggle('hidden', loggedIn)", response.data)
+
+    def test_logged_in_index_unlocks_generation_interface_server_side(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "unlock@example.com", "password": "safe-password", "display_name": "Unlock"},
+        )
+
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"authenticated-content", response.data)
+        self.assertNotIn(b"authenticated-content hidden", response.data)
 
     def test_login_route_renders_login_panel(self):
         response = self.client.get("/login")

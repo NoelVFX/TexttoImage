@@ -21,14 +21,14 @@
         <p class="section-copy">Save your generated image and video history across sessions.</p>
       </div>
       <section class="card app-card account-card">
-        <div class="account-status-panel hidden" id="account-status-panel">
+        <div class="account-status-panel {% if not is_logged_in %}hidden{% endif %}" id="account-status-panel">
           <p class="status-line" id="account-status-line">Checking account...</p>
           <div class="prompt-tools">
             <button type="button" class="secondary-button" id="refresh-history-button">Refresh history</button>
             <button type="button" class="secondary-button" id="logout-button">Logout</button>
           </div>
         </div>
-        <div class="account-auth-grid" id="account-auth-grid">
+        <div class="account-auth-grid {% if is_logged_in %}hidden{% endif %}" id="account-auth-grid">
           <form class="generator-form auth-form" id="login-form">
             <h3>Login</h3>
             <label for="login-email">Email</label>
@@ -48,12 +48,12 @@
             <button type="submit">Create account</button>
           </form>
         </div>
-        <div class="google-login-row">
+        <div class="google-login-row {% if is_logged_in %}hidden{% endif %}" id="google-login-row">
           <a class="download-button google-login-button" href="/auth/google">Continue with Google</a>
           <span class="prompt-rewrite-status" id="account-message" aria-live="polite"></span>
         </div>
       </section>
-      <section class="card result-card account-history-card">
+      <section class="card result-card account-history-card authenticated-content {% if not is_logged_in %}hidden{% endif %}">
         <div class="result-header">
           <div>
             <p class="eyebrow">My history</p>
@@ -69,7 +69,7 @@
       </section>
     </section>
 
-    <section class="media-section">
+    <section class="media-section authenticated-content {% if not is_logged_in %}hidden{% endif %}">
       <div class="section-heading">
         <p class="eyebrow">Text to image</p>
         <h2>Generate an image</h2>
@@ -135,7 +135,7 @@
       </section>
     </section>
 
-    <section class="media-section video-section">
+    <section class="media-section video-section authenticated-content {% if not is_logged_in %}hidden{% endif %}">
       <div class="section-heading">
         <p class="eyebrow">OpenRouter video generation</p>
         <h2>Generate a Wan 2.6 video</h2>
@@ -207,7 +207,7 @@
       </section>
     </section>
 
-    <section class="media-section library-section" aria-labelledby="session-library-title">
+    <section class="media-section library-section authenticated-content {% if not is_logged_in %}hidden{% endif %}" aria-labelledby="session-library-title">
       <div class="section-heading library-heading">
         <div>
           <p class="eyebrow">This browser session</p>
@@ -274,6 +274,8 @@
     const accountStatusPanel = document.getElementById('account-status-panel');
     const accountStatusLine = document.getElementById('account-status-line');
     const accountMessage = document.getElementById('account-message');
+    const googleLoginRow = document.getElementById('google-login-row');
+    const authenticatedContent = document.querySelectorAll('.authenticated-content');
     const logoutButton = document.getElementById('logout-button');
     const refreshHistoryButton = document.getElementById('refresh-history-button');
     const accountHistoryGrid = document.getElementById('account-history-grid');
@@ -432,6 +434,10 @@
       }
     };
 
+    const setAuthenticatedContentVisible = (visible) => {
+      authenticatedContent.forEach((section) => section.classList.toggle('hidden', !visible));
+    };
+
     const renderLibraryForUser = (user) => {
       activeLibraryUserId = user?.id || 'anonymous';
       renderLibrary();
@@ -441,6 +447,8 @@
       const loggedIn = Boolean(user);
       accountAuthGrid?.classList.toggle('hidden', loggedIn);
       accountStatusPanel?.classList.toggle('hidden', !loggedIn);
+      googleLoginRow?.classList.toggle('hidden', loggedIn);
+      setAuthenticatedContentVisible(loggedIn);
       accountStatusLine.textContent = loggedIn ? `Logged in as ${user.display_name || user.email}` : 'Not logged in.';
       renderLibraryForUser(user);
       if (loggedIn) loadAccountHistory();
