@@ -16,6 +16,7 @@ def normalize_email(email: str) -> str:
 
 def ensure_auth_indexes(db) -> None:
     db["users"].create_index("email", unique=True)
+    db["users"].create_index("google_id")
     db["generation_history"].create_index("user_id")
     db["generation_history"].create_index("created_at")
 
@@ -73,6 +74,32 @@ def get_user_by_id(db, user_id: str) -> dict[str, Any] | None:
         if user:
             return user
     return None
+
+
+def upsert_google_user(db, *, google_id: str, email: str, display_name: str | None = None, picture_url: str | None = None) -> dict[str, Any]:
+    email = normalize_email(email)
+    if not google_id:
+        raise ValueError("Google user id is required.")
+    if not email or "@" not in email:
+        raise ValueError("Google account did not return a valid email.")
+    now = utc_now()
+    existing = db["users"].find_one({"google_id": google_id}) or db["users"].find_one({"email": email})
+    update = {
+        "google_id": google_id,
+        "email": email,
+        "display_name": (display_name or email).strip(),
+        "picture_url": picture_url,
+        "auth_provider": "google",
+        "updated_at": now,
+    }
+    if existing:
+        db["users"].update_one({"_id": existing["_id"]}, {"$set": update})
+        existing.update(update)
+        return existing
+    document = {**update, "created_at": now}
+    result = db["users"].insert_one(document)
+    document["_id"] = result.inserted_id
+    return document
 
 
 def record_generation_history(

@@ -124,6 +124,41 @@ h2 {
   margin-bottom: 24px;
 }
 
+.account-card,
+.account-history-card {
+  margin-bottom: 24px;
+}
+
+.account-auth-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.auth-form {
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.32);
+}
+
+.auth-form h3 {
+  margin: 0;
+  color: #dbeafe;
+}
+
+.google-login-row,
+.account-status-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.google-login-button {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
 .generator-form {
   display: grid;
   gap: 18px;
@@ -135,7 +170,8 @@ legend {
   font-weight: 800;
 }
 
-textarea {
+textarea,
+.auth-form input {
   width: 100%;
   resize: vertical;
   border: 1px solid var(--border);
@@ -148,7 +184,13 @@ textarea {
   outline: none;
 }
 
-textarea:focus {
+.auth-form input {
+  min-height: 48px;
+  resize: none;
+}
+
+textarea:focus,
+.auth-form input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
 }
@@ -471,6 +513,7 @@ button:disabled {
   }
 
   .ratio-grid,
+  .account-auth-grid,
   .result-header,
   .library-heading {
     grid-template-columns: 1fr;

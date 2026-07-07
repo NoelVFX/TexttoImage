@@ -14,6 +14,61 @@
       <p class="subtitle">Type a prompt, choose an aspect ratio, then preview and download the generated media on the same page.</p>
     </section>
 
+    <section class="media-section account-section" id="account-section">
+      <div class="section-heading">
+        <p class="eyebrow">Account</p>
+        <h2>Login or create an account</h2>
+        <p class="section-copy">Save your generated image and video history across sessions.</p>
+      </div>
+      <section class="card app-card account-card">
+        <div class="account-status-panel hidden" id="account-status-panel">
+          <p class="status-line" id="account-status-line">Checking account...</p>
+          <div class="prompt-tools">
+            <button type="button" class="secondary-button" id="refresh-history-button">Refresh history</button>
+            <button type="button" class="secondary-button" id="logout-button">Logout</button>
+          </div>
+        </div>
+        <div class="account-auth-grid" id="account-auth-grid">
+          <form class="generator-form auth-form" id="login-form">
+            <h3>Login</h3>
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" name="email" autocomplete="email" required>
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+            <button type="submit">Login</button>
+          </form>
+          <form class="generator-form auth-form" id="register-form">
+            <h3>Register</h3>
+            <label for="register-name">Display name</label>
+            <input type="text" id="register-name" name="display_name" autocomplete="name">
+            <label for="register-email">Email</label>
+            <input type="email" id="register-email" name="email" autocomplete="email" required>
+            <label for="register-password">Password</label>
+            <input type="password" id="register-password" name="password" autocomplete="new-password" minlength="8" required>
+            <button type="submit">Create account</button>
+          </form>
+        </div>
+        <div class="google-login-row">
+          <a class="download-button google-login-button" href="/auth/google">Continue with Google</a>
+          <span class="prompt-rewrite-status" id="account-message" aria-live="polite"></span>
+        </div>
+      </section>
+      <section class="card result-card account-history-card">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">My history</p>
+            <h2>Saved generations</h2>
+          </div>
+        </div>
+        <div class="empty-state" id="account-history-empty">
+          <div class="empty-icon">◷</div>
+          <h2>No saved account history yet</h2>
+          <p>Login, generate media, then your saved history will appear here.</p>
+        </div>
+        <div class="session-library-grid hidden" id="account-history-grid"></div>
+      </section>
+    </section>
+
     <section class="media-section">
       <div class="section-heading">
         <p class="eyebrow">Text to image</p>
@@ -213,6 +268,16 @@
     const libraryGrid = document.getElementById('session-library-grid');
     const libraryEmpty = document.getElementById('session-library-empty');
     const clearLibraryButton = document.getElementById('clear-session-library');
+    const loginForm = document.getElementById('login-form');
+    const registerForm = document.getElementById('register-form');
+    const accountAuthGrid = document.getElementById('account-auth-grid');
+    const accountStatusPanel = document.getElementById('account-status-panel');
+    const accountStatusLine = document.getElementById('account-status-line');
+    const accountMessage = document.getElementById('account-message');
+    const logoutButton = document.getElementById('logout-button');
+    const refreshHistoryButton = document.getElementById('refresh-history-button');
+    const accountHistoryGrid = document.getElementById('account-history-grid');
+    const accountHistoryEmpty = document.getElementById('account-history-empty');
     const sessionLibraryKey = 'tti-session-media-library';
     const serverGeneratedImage = {
       type: 'image',
@@ -293,6 +358,140 @@
         statusEl: videoRewriteStatus
       });
     });
+
+    const authJson = async (url, payload) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await parseJsonResponse(response, 'Account request failed.');
+      if (!response.ok || data.error) {
+        throw new Error(data.error || 'Account request failed.');
+      }
+      return data;
+    };
+
+    const renderAccountHistory = (items = []) => {
+      if (!accountHistoryGrid || !accountHistoryEmpty) return;
+      accountHistoryGrid.innerHTML = '';
+      accountHistoryGrid.classList.toggle('hidden', items.length === 0);
+      accountHistoryEmpty.classList.toggle('hidden', items.length > 0);
+      items.forEach((item) => {
+        const card = document.createElement('article');
+        card.className = 'library-item';
+        const mediaWrap = document.createElement('div');
+        mediaWrap.className = 'library-media';
+        if (item.media_type === 'video') {
+          const video = document.createElement('video');
+          video.src = item.result_url;
+          video.controls = true;
+          video.playsInline = true;
+          mediaWrap.appendChild(video);
+        } else {
+          const image = document.createElement('img');
+          image.src = item.result_url;
+          image.alt = item.prompt || 'Saved generation';
+          mediaWrap.appendChild(image);
+        }
+        const meta = document.createElement('div');
+        meta.className = 'library-meta';
+        const title = document.createElement('strong');
+        title.textContent = item.media_type === 'video' ? 'Video' : 'Image';
+        const promptText = document.createElement('p');
+        promptText.textContent = item.prompt || 'Untitled prompt';
+        const actions = document.createElement('div');
+        actions.className = 'library-actions';
+        const openLink = document.createElement('a');
+        openLink.href = item.result_url;
+        openLink.target = '_blank';
+        openLink.rel = 'noopener';
+        openLink.textContent = 'Open';
+        actions.appendChild(openLink);
+        meta.append(title, promptText, actions);
+        card.append(mediaWrap, meta);
+        accountHistoryGrid.appendChild(card);
+      });
+    };
+
+    const loadAccountHistory = async () => {
+      try {
+        const response = await fetch('/auth/history');
+        const data = await parseJsonResponse(response, 'History request failed.');
+        if (!response.ok || data.error) {
+          if (response.status !== 401 && response.status !== 503) throw new Error(data.error || 'History request failed.');
+          renderAccountHistory([]);
+          return;
+        }
+        renderAccountHistory(data.items || []);
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    };
+
+    const renderAccountState = (user) => {
+      const loggedIn = Boolean(user);
+      accountAuthGrid?.classList.toggle('hidden', loggedIn);
+      accountStatusPanel?.classList.toggle('hidden', !loggedIn);
+      accountStatusLine.textContent = loggedIn ? `Logged in as ${user.display_name || user.email}` : 'Not logged in.';
+      if (loggedIn) loadAccountHistory();
+      else renderAccountHistory([]);
+    };
+
+    const loadCurrentUser = async () => {
+      try {
+        const response = await fetch('/auth/me');
+        const data = await parseJsonResponse(response, 'Current user request failed.');
+        if (!response.ok || data.error) {
+          renderAccountState(null);
+          return null;
+        }
+        renderAccountState(data.user);
+        return data.user;
+      } catch (error) {
+        renderAccountState(null);
+        accountMessage.textContent = error.message;
+        return null;
+      }
+    };
+
+    loginForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      accountMessage.textContent = 'Logging in...';
+      const formData = new FormData(loginForm);
+      try {
+        const data = await authJson('/auth/login', Object.fromEntries(formData.entries()));
+        accountMessage.textContent = 'Logged in.';
+        renderAccountState(data.user);
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    });
+
+    registerForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      accountMessage.textContent = 'Creating account...';
+      const formData = new FormData(registerForm);
+      try {
+        const data = await authJson('/auth/register', Object.fromEntries(formData.entries()));
+        accountMessage.textContent = 'Account created.';
+        renderAccountState(data.user);
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    });
+
+    logoutButton?.addEventListener('click', async () => {
+      try {
+        await authJson('/auth/logout', {});
+        accountMessage.textContent = 'Logged out.';
+        renderAccountState(null);
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    });
+    refreshHistoryButton?.addEventListener('click', () => loadAccountHistory());
+    loadCurrentUser();
 
     const workspacePoint = (event) => {
       const rect = imageEditWorkspace.getBoundingClientRect();

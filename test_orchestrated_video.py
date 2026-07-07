@@ -882,6 +882,67 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"sessionStorage", response.data)
         self.assertIn(b"addLibraryItem", response.data)
 
+    def test_index_includes_login_register_google_and_history_ui(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Account", response.data)
+        self.assertIn(b"id=\"login-form\"", response.data)
+        self.assertIn(b"id=\"register-form\"", response.data)
+        self.assertIn(b"href=\"/auth/google\"", response.data)
+        self.assertIn(b"id=\"account-history-grid\"", response.data)
+        self.assertIn(b"loadCurrentUser", response.data)
+        self.assertIn(b"renderAccountHistory", response.data)
+
+    def test_login_route_renders_login_panel(self):
+        response = self.client.get("/login")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Account", response.data)
+        self.assertIn(b"id=\"login-form\"", response.data)
+        self.assertIn(b"Continue with Google", response.data)
+
+    def test_google_login_redirects_to_google_oauth_when_configured(self):
+        app.APP_DB = FakeDatabase()
+        with patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "client123", "GOOGLE_CLIENT_SECRET": "secret123"}, clear=False):
+            response = self.client.get("/auth/google")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("accounts.google.com", response.location)
+        self.assertIn("client_id=client123", response.location)
+
+    @patch("app.requests.get")
+    @patch("app.requests.post")
+    def test_google_callback_exchanges_code_and_logs_user_in(self, mock_post, mock_get):
+        app.APP_DB = FakeDatabase()
+        with self.client.session_transaction() as session:
+            session["google_oauth_state"] = "state123"
+
+        token_response = Mock()
+        token_response.status_code = 200
+        token_response.json.return_value = {"access_token": "access123"}
+        token_response.text = "ok"
+        userinfo_response = Mock()
+        userinfo_response.status_code = 200
+        userinfo_response.json.return_value = {
+            "sub": "google-user-1",
+            "email": "google@example.com",
+            "name": "Google User",
+            "picture": "https://example.com/avatar.png",
+        }
+        userinfo_response.text = "ok"
+        mock_post.return_value = token_response
+        mock_get.return_value = userinfo_response
+
+        with patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "client123", "GOOGLE_CLIENT_SECRET": "secret123"}, clear=False):
+            response = self.client.get("/auth/google/callback?code=code123&state=state123")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, "/")
+        me = self.client.get("/auth/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.get_json()["user"]["email"], "google@example.com")
+
     def test_generated_image_result_includes_masked_edit_controls(self):
         response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
 

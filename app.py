@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session, redirect
 
 from AuthService import (
     authenticate_user,
@@ -18,6 +20,7 @@ from AuthService import (
     list_generation_history,
     record_generation_history,
     serialize_user,
+    upsert_google_user,
 )
 from Database import get_database
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
@@ -359,6 +362,92 @@ def auth_history():
         return jsonify({"error": "Not logged in."}), 401
     limit = max(1, min(100, int(request.args.get("limit", "50"))))
     return jsonify({"items": list_generation_history(db, user_id=user_id, limit=limit)})
+
+
+@app.get("/login")
+def login_page():
+    return render_index(show_login=True)
+
+
+def google_oauth_config() -> tuple[str | None, str | None]:
+    return (os.getenv("GOOGLE_CLIENT_ID"), os.getenv("GOOGLE_CLIENT_SECRET"))
+
+
+@app.get("/auth/google")
+def auth_google():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    client_id, client_secret = google_oauth_config()
+    if not client_id or not client_secret:
+        return jsonify({"error": "Google login is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}), 503
+    state = secrets.token_urlsafe(24)
+    session["google_oauth_state"] = state
+    redirect_uri = url_for("auth_google_callback", _external=True)
+    query = urlencode(
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "access_type": "offline",
+            "prompt": "select_account",
+        }
+    )
+    return redirect(f"https://accounts.google.com/o/oauth2/v2/auth?{query}")
+
+
+@app.get("/auth/google/callback")
+def auth_google_callback():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    expected_state = session.get("google_oauth_state")
+    if not expected_state or request.args.get("state") != expected_state:
+        return jsonify({"error": "Invalid Google login state."}), 400
+    code = request.args.get("code")
+    if not code:
+        return jsonify({"error": "Google login did not return an authorization code."}), 400
+    client_id, client_secret = google_oauth_config()
+    if not client_id or not client_secret:
+        return jsonify({"error": "Google login is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}), 503
+
+    token_response = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": url_for("auth_google_callback", _external=True),
+            "grant_type": "authorization_code",
+        },
+        timeout=20,
+    )
+    if token_response.status_code != 200:
+        return jsonify({"error": "Google token exchange failed.", "detail": token_response.text[:300]}), 502
+    access_token = token_response.json().get("access_token")
+    if not access_token:
+        return jsonify({"error": "Google token exchange did not return an access token."}), 502
+
+    userinfo_response = requests.get(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=20,
+    )
+    if userinfo_response.status_code != 200:
+        return jsonify({"error": "Google userinfo lookup failed.", "detail": userinfo_response.text[:300]}), 502
+    profile = userinfo_response.json()
+    user = upsert_google_user(
+        db,
+        google_id=profile.get("sub", ""),
+        email=profile.get("email", ""),
+        display_name=profile.get("name"),
+        picture_url=profile.get("picture"),
+    )
+    session.pop("google_oauth_state", None)
+    session["user_id"] = str(user.get("_id"))
+    return redirect("/")
 
 
 @app.post("/prompt/rewrite")

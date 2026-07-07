@@ -38,6 +38,7 @@ Video generation requires an OpenRouter API key. OpenAI image edits for masked r
 cp .env.example .env
 # edit .env and set MONGODB_URI and MONGODB_PASSWORD for user accounts/history
 # edit .env and set FLASK_SECRET_KEY to a long random string for sessions
+# optional: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET for Google login
 # edit .env and set OPENROUTER_API_KEY for video generation
 # edit .env and set OPENAI_API_KEY for OpenAI masked image edits
 # optional: set FAL_KEY or FAL_API_KEY and INPAINT_PROVIDER=fal for FLUX/Fal.ai inpainting
@@ -53,6 +54,7 @@ Optional variables:
 - `MONGODB_PASSWORD` - password used to replace `<db_password>` in `MONGODB_URI`
 - `MONGODB_DB` - database name; defaults to `tti_app`
 - `FLASK_SECRET_KEY` - long random string used to sign login sessions
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` - optional Google OAuth credentials for `/auth/google`; add the deployed callback URL `/auth/google/callback` in Google Cloud Console
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
