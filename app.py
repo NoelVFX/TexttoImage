@@ -519,6 +519,32 @@ def rewrite_generation_prompt():
     )
 
 
+def record_masked_edit_history(*, user_id: str | None, edit_payload: dict, context_prompt: str | None = None) -> None:
+    if not user_id or not edit_payload.get("edited_image_url"):
+        return
+    db = current_db()
+    if db is None:
+        return
+    try:
+        record_generation_history(
+            db,
+            user_id=user_id,
+            media_type="image",
+            prompt=edit_payload.get("micro_prompt") or context_prompt or "Masked image edit",
+            result_url=edit_payload["edited_image_url"],
+            metadata={
+                "workflow": edit_payload.get("workflow"),
+                "provider": "openai" if edit_payload.get("workflow") == "openai-image-edit-mask" else selected_inpaint_provider(),
+                "source_image_url": edit_payload.get("image_url"),
+                "context_prompt": context_prompt,
+                "mask": edit_payload.get("mask"),
+                "target_color": edit_payload.get("target_color"),
+            },
+        )
+    except Exception:
+        app.logger.exception("Failed to record masked image edit history")
+
+
 def build_image_edit_payload(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> dict:
     color_request = detect_color_recolor_request(micro_prompt)
     if color_request:
@@ -582,7 +608,14 @@ def prune_image_edit_jobs(now: float | None = None) -> None:
             IMAGE_EDIT_JOBS.pop(job_id, None)
 
 
-def start_image_edit_job(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> str:
+def start_image_edit_job(
+    *,
+    image_url: str,
+    micro_prompt: str,
+    mask: dict,
+    context_prompt: str | None = None,
+    user_id: str | None = None,
+) -> str:
     prune_image_edit_jobs()
     job_id = f"edit_{uuid.uuid4().hex}"
     with IMAGE_EDIT_JOBS_LOCK:
@@ -607,6 +640,7 @@ def start_image_edit_job(*, image_url: str, micro_prompt: str, mask: dict, conte
                     mask=mask,
                     context_prompt=context_prompt,
                 )
+                record_masked_edit_history(user_id=user_id, edit_payload=result, context_prompt=context_prompt)
             with IMAGE_EDIT_JOBS_LOCK:
                 if job_id in IMAGE_EDIT_JOBS:
                     IMAGE_EDIT_JOBS[job_id].update(
@@ -647,6 +681,7 @@ def edit_image_region():
                 micro_prompt=micro_prompt,
                 mask=mask,
                 context_prompt=context_prompt,
+                user_id=current_user_id(),
             )
             return jsonify(
                 {
@@ -663,6 +698,7 @@ def edit_image_region():
             mask=mask,
             context_prompt=context_prompt,
         )
+        record_masked_edit_history(user_id=current_user_id(), edit_payload=edit_payload, context_prompt=context_prompt)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except ImageEditError as exc:

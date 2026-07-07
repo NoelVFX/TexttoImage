@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -1010,6 +1011,9 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"AI inpainting", response.data)
         self.assertIn(b"pollMaskedEditJob", response.data)
         self.assertIn(b"/image/edit-region/status/", response.data)
+        self.assertIn(b"sessionLibraryKeyForUser", response.data)
+        self.assertIn(b"activeLibraryUserId", response.data)
+        self.assertIn(b"renderLibraryForUser", response.data)
         self.assertNotIn(b"box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.75)", response.data)
 
     @patch("app.start_image_edit_job")
@@ -1032,6 +1036,51 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["status"], "queued")
         self.assertIn("/image/edit-region/status/job_test_123", payload["status_url"])
         mock_start.assert_called_once()
+
+    @patch("app.build_image_edit_payload")
+    def test_async_masked_image_edit_records_logged_in_user_history(self, mock_build):
+        app.APP_DB = FakeDatabase()
+        app.IMAGE_EDIT_JOBS.clear()
+        self.client.post(
+            "/auth/register",
+            json={"email": "editor@example.com", "password": "safe-password", "display_name": "Editor"},
+        )
+        mock_build.return_value = {
+            "image_url": "https://example.com/original-apple.jpg",
+            "micro_prompt": "replace the apple with an orange",
+            "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+            "workflow": "openai-image-edit-mask",
+            "edited_image_url": "https://app.test/static/generated/openai-inpaint-123.png",
+            "inpaint_prompt": "replace the apple with an orange",
+        }
+
+        response = self.client.post(
+            "/image/edit-region",
+            json={
+                "image_url": "https://example.com/original-apple.jpg",
+                "micro_prompt": "replace the apple with an orange",
+                "mask": {"x": 10, "y": 20, "width": 120, "height": 80},
+                "context_prompt": "an apple on a wooden table",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        job_id = response.get_json()["job_id"]
+        for _ in range(30):
+            status = self.client.get(f"/image/edit-region/status/{job_id}").get_json()
+            if status["status"] == "completed":
+                break
+            time.sleep(0.05)
+        self.assertEqual(status["status"], "completed")
+        history = self.client.get("/auth/history")
+        self.assertEqual(history.status_code, 200)
+        items = history.get_json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["media_type"], "image")
+        self.assertEqual(items[0]["prompt"], "replace the apple with an orange")
+        self.assertEqual(items[0]["result_url"], "https://app.test/static/generated/openai-inpaint-123.png")
+        self.assertEqual(items[0]["metadata"]["workflow"], "openai-image-edit-mask")
+        self.assertEqual(items[0]["metadata"]["source_image_url"], "https://example.com/original-apple.jpg")
 
     def test_image_edit_region_status_endpoint_returns_completed_result(self):
         app.IMAGE_EDIT_JOBS["job_done"] = {

@@ -278,7 +278,10 @@
     const refreshHistoryButton = document.getElementById('refresh-history-button');
     const accountHistoryGrid = document.getElementById('account-history-grid');
     const accountHistoryEmpty = document.getElementById('account-history-empty');
-    const sessionLibraryKey = 'tti-session-media-library';
+    const sessionLibraryBaseKey = 'tti-session-media-library';
+    let activeLibraryUserId = 'anonymous';
+    const sessionLibraryKeyForUser = (user) => `${sessionLibraryBaseKey}:${user?.id || 'anonymous'}`;
+    const currentSessionLibraryKey = () => sessionLibraryKeyForUser({ id: activeLibraryUserId || 'anonymous' });
     const serverGeneratedImage = {
       type: 'image',
       url: {{ image_url|tojson }},
@@ -429,11 +432,17 @@
       }
     };
 
+    const renderLibraryForUser = (user) => {
+      activeLibraryUserId = user?.id || 'anonymous';
+      renderLibrary();
+    };
+
     const renderAccountState = (user) => {
       const loggedIn = Boolean(user);
       accountAuthGrid?.classList.toggle('hidden', loggedIn);
       accountStatusPanel?.classList.toggle('hidden', !loggedIn);
       accountStatusLine.textContent = loggedIn ? `Logged in as ${user.display_name || user.email}` : 'Not logged in.';
+      renderLibraryForUser(user);
       if (loggedIn) loadAccountHistory();
       else renderAccountHistory([]);
     };
@@ -491,7 +500,6 @@
       }
     });
     refreshHistoryButton?.addEventListener('click', () => loadAccountHistory());
-    loadCurrentUser();
 
     const workspacePoint = (event) => {
       const rect = imageEditWorkspace.getBoundingClientRect();
@@ -640,7 +648,7 @@
 
     const readLibraryItems = () => {
       try {
-        const parsed = JSON.parse(sessionStorage.getItem(sessionLibraryKey) || '[]');
+        const parsed = JSON.parse(sessionStorage.getItem(currentSessionLibraryKey()) || '[]');
         return Array.isArray(parsed) ? parsed : [];
       } catch (error) {
         return [];
@@ -648,7 +656,7 @@
     };
 
     const writeLibraryItems = (items) => {
-      sessionStorage.setItem(sessionLibraryKey, JSON.stringify(items.slice(0, 24)));
+      sessionStorage.setItem(currentSessionLibraryKey(), JSON.stringify(items.slice(0, 24)));
     };
 
     const renderLibrary = () => {
@@ -706,14 +714,16 @@
     };
 
     clearLibraryButton?.addEventListener('click', () => {
-      sessionStorage.removeItem(sessionLibraryKey);
+      sessionStorage.removeItem(currentSessionLibraryKey());
       renderLibrary();
     });
 
-    if (serverGeneratedImage.url) {
-      addLibraryItem(serverGeneratedImage);
-    }
-    renderLibrary();
+    loadCurrentUser().finally(() => {
+      if (serverGeneratedImage.url) {
+        addLibraryItem(serverGeneratedImage);
+      }
+      renderLibrary();
+    });
 
     const resetVideoResult = () => {
       videoEl.pause();
