@@ -10,15 +10,19 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
   - `1024x1024` / 1:1 square
   - `1792x1024` / 16:9 widescreen
 - Generated image preview on the same page
+- OpenAI image-edit masked edits: draw a box over a specific element, type a micro-prompt, and the app uploads the source image plus alpha mask so OpenAI edits only the selected area while preserving unmasked pixels
+- Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
+- Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips
 - Cost-saving video workflow:
   1. Hermes optimizes the user's prompt for a stable first-frame composition
-  2. Build a free static first frame with Pollinations using a deterministic seed
-  3. The Vision Agent reviews that exact free frame with a permissive soft gate, blocking only high-confidence severe problems
-  4. Only after approval, pass that image URL into OpenRouter as `frame_images[0]` / `first_frame`
-  5. Animate it with OpenRouter model `alibaba/wan-2.6`
+  2. Build a free 3-frame static storyboard grid with Pollinations: start, middle, and end
+  3. Save each storyboard frame as an app-served static image URL so OpenRouter/Wan receives a stable file instead of a dynamic generator URL
+  4. Let the user regenerate any individual storyboard frame with a custom prompt before spending video credits
+  5. Submit the selected/approved start frame into OpenRouter as `frame_images[0]` / `first_frame`
+  6. Animate it with OpenRouter model `alibaba/wan-2.6`
 - Video aspect ratio selector:
   - `16:9` widescreen
   - `9:16` vertical
@@ -27,11 +31,13 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 
 ## Environment
 
-Video generation requires an OpenRouter API key. The free-frame visual review uses your local Hermes Agent CLI, so Hermes must be installed and configured with a vision-capable model/provider.
+Video generation requires an OpenRouter API key. OpenAI image edits for masked replacement edits require an OpenAI API key. The free-frame visual review uses your local Hermes Agent CLI, so Hermes must be installed and configured with a vision-capable model/provider.
 
 ```bash
 cp .env.example .env
-# edit .env and set OPENROUTER_API_KEY
+# edit .env and set OPENROUTER_API_KEY for video generation
+# edit .env and set OPENAI_API_KEY for OpenAI masked image edits
+# optional: set FAL_KEY or FAL_API_KEY and INPAINT_PROVIDER=fal for FLUX/Fal.ai inpainting
 # verify Hermes is available and configured:
 hermes doctor
 ```
@@ -45,6 +51,19 @@ Optional variables:
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
 - `POLLINATIONS_FALLBACK_MODELS` - comma-separated fallback image models if Pollinations queues/rate-limits the preferred first-frame model; defaults to `turbo,gpt-image-large`
 - `POLLINATIONS_TOKEN` - token from https://auth.pollinations.ai for higher Pollinations limits
+- `OPENAI_API_KEY` - OpenAI API key for default masked image replacement edits
+- `OPENAI_IMAGE_EDIT_MODEL` - OpenAI image edit model; defaults to `gpt-image-1`
+- `OPENAI_IMAGE_SIZE` - image size parameter for OpenAI edits; defaults to `auto`
+- `OPENAI_IMAGE_QUALITY` - image quality parameter for OpenAI edits; defaults to `auto`
+- `INPAINT_PROVIDER` - masked replacement backend; defaults to `openai`, set to `fal` to use Fal.ai/FLUX
+- `FAL_KEY` or `FAL_API_KEY` - Fal.ai key for optional FLUX inpainting masked replacement edits
+- `FAL_INPAINT_ENDPOINT` - override the FLUX inpainting queue endpoint; defaults to `https://queue.fal.run/fal-ai/flux-general/inpainting`
+- `FAL_INPAINT_IMAGE_SIZE` - optional Fal image size hint such as `landscape_16_9`
+- `FAL_INPAINT_STEPS` - FLUX inpainting inference steps; default `28`
+- `INPAINT_MASK_FEATHER_PX` - pixel blur radius for generated mask edges; default `4`
+- `IMAGE_EDIT_ASYNC` - run masked edits in a background job with browser polling; default `true` to avoid long request/proxy timeouts
+- `IMAGE_EDIT_JOB_TTL_SECONDS` - seconds to keep completed/failed masked edit jobs in memory; default `3600`
+- `PUBLIC_BASE_URL` or `APP_BASE_URL` - optional public HTTPS base URL used for app-served storyboard/mask/source image URLs sent to OpenRouter or Fal.ai; not required for OpenAI image edits because the app uploads image bytes
 - `VIDEO_ORCHESTRATOR_REVIEWER=hermes` - uses Hermes Agent as the visual reviewer before paid I2V
 - `HERMES_COMMAND` - path/name of the Hermes executable; default `hermes`
 - `PROMPT_REWRITE_PROVIDER` and `PROMPT_REWRITE_MODEL` - provider/model override for the Hermes AI prompt rewrite subprocess; defaults are `openrouter` and `openai/gpt-4o-mini`
@@ -96,6 +115,11 @@ git push -u origin main
 
 - `app.py` - Flask routes and web UI/API integration
 - `TexttoImage.py` - Pollinations image generation helper
+- `ImageEdit.py` - masked edit helpers for OpenAI/Fal masks, legacy composites, and deterministic recolors
+- `OpenAIImageEdit.py` - OpenAI Images Edit client for uploading source image + alpha mask
+- `FluxInpaint.py` - optional Fal.ai FLUX inpainting queue client
+- `PromptRewrite.py` - Hermes CLI prompt rewrite helper for image/video prompt engineering
+- `Storyboard.py` - Pollinations 3-frame start/middle/end storyboard helper
 - `OrchestratedVideo.py` - Hermes prompt optimizer, free-frame generation, Vision Agent gate, and retry/blocking logic
 - `OpenRouterVideo.py` - OpenRouter Wan 2.6 video generation helper
 - `templates/index.html` - Web page template

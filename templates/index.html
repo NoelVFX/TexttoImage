@@ -59,7 +59,17 @@
             </div>
             <a class="download-button" href="{{ download_url }}" target="_blank" rel="noopener" download="generated-image.jpg">Download</a>
           </div>
-          <img class="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+          <div class="image-edit-workspace" id="image-edit-workspace" data-image-url="{{ image_url }}" data-context-prompt="{{ prompt }}">
+            <img class="generated-image" id="generated-image" src="{{ image_url }}" alt="Generated image for: {{ prompt }}">
+            <div class="image-mask-box hidden" id="image-mask-box"></div>
+            <div class="image-edit-patches" id="image-edit-patches"></div>
+          </div>
+          <div class="image-edit-controls">
+            <button type="button" class="secondary-button" id="draw-mask-button">Draw mask box</button>
+            <input type="text" id="masked-edit-prompt" placeholder="Micro-prompt for selected region, e.g. open this door" aria-label="Masked region edit prompt">
+            <button type="button" class="secondary-button" id="apply-masked-edit">Apply masked edit</button>
+            <span class="prompt-rewrite-status" id="masked-edit-status" aria-live="polite"></span>
+          </div>
         {% else %}
           <div class="empty-state">
             <div class="empty-icon">✦</div>
@@ -105,8 +115,12 @@
             <small>OpenRouter/Wan 2.6 will try to generate matching sound for the clip. This can cost more credits.</small>
           </label>
 
-          <p class="form-note">Cost saver: Pollinations creates a free first frame, the Vision Agent blocks only severe high-confidence issues, then Wan 2.6 animates it with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
-          <button type="submit" id="video-generate-button">Generate video</button>
+          <div class="prompt-tools">
+            <button type="button" class="secondary-button" id="create-storyboard-button">Create 3-frame storyboard</button>
+            <span class="prompt-rewrite-status" id="storyboard-status" aria-live="polite"></span>
+          </div>
+
+          <p class="form-note">Cost saver: Pollinations creates a free start/middle/end storyboard first. You can regenerate a specific frame, then Wan 2.6 animates the selected start frame with I2V. Video settings: 720p, {{ default_video_duration }} seconds, optional generated audio.</p>
         </form>
 
         <div class="alert hidden" id="video-error" role="alert"></div>
@@ -128,9 +142,10 @@
             <a class="download-button hidden" id="video-download" href="#" target="_blank" rel="noopener" download="generated-video.mp4">Download</a>
           </div>
           <p class="status-line" id="video-status-line">Waiting for OpenRouter...</p>
-          <div class="start-frame-preview hidden" id="start-frame-preview">
-            <p class="eyebrow">Free Pollinations start frame</p>
-            <img class="generated-image start-frame-image" id="start-frame-image" alt="Pollinations-generated starting frame for the video">
+          <div class="storyboard-panel hidden" id="storyboard-panel">
+            <p class="eyebrow">3-frame storyboard before I2V</p>
+            <div class="storyboard-grid" id="storyboard-grid"></div>
+            <button type="button" id="video-generate-button">Generate video from storyboard</button>
           </div>
           <video class="generated-video hidden" id="generated-video" controls playsinline></video>
         </div>
@@ -163,6 +178,17 @@
     const imagePrompt = document.getElementById('prompt');
     const imageRewriteButton = document.getElementById('rewrite-image-prompt');
     const imageRewriteStatus = document.getElementById('image-rewrite-status');
+    const imageEditWorkspace = document.getElementById('image-edit-workspace');
+    const generatedImage = document.getElementById('generated-image');
+    const imageMaskBox = document.getElementById('image-mask-box');
+    const imageEditPatches = document.getElementById('image-edit-patches');
+    const drawMaskButton = document.getElementById('draw-mask-button');
+    const maskedEditPrompt = document.getElementById('masked-edit-prompt');
+    const applyMaskedEditButton = document.getElementById('apply-masked-edit');
+    const maskedEditStatus = document.getElementById('masked-edit-status');
+    let selectedImageMask = null;
+    let drawingMask = false;
+    let maskStart = null;
     imageForm?.addEventListener('submit', () => {
       imageButton.disabled = true;
       imageButton.textContent = 'Generating...';
@@ -173,6 +199,8 @@
     const videoPrompt = document.getElementById('video-prompt');
     const videoRewriteButton = document.getElementById('rewrite-video-prompt');
     const videoRewriteStatus = document.getElementById('video-rewrite-status');
+    const createStoryboardButton = document.getElementById('create-storyboard-button');
+    const storyboardStatus = document.getElementById('storyboard-status');
     const videoError = document.getElementById('video-error');
     const videoEmpty = document.getElementById('video-empty-state');
     const videoPanel = document.getElementById('video-status-panel');
@@ -180,8 +208,8 @@
     const videoLine = document.getElementById('video-status-line');
     const videoEl = document.getElementById('generated-video');
     const videoDownload = document.getElementById('video-download');
-    const startFramePreview = document.getElementById('start-frame-preview');
-    const startFrameImage = document.getElementById('start-frame-image');
+    const storyboardPanel = document.getElementById('storyboard-panel');
+    const storyboardGrid = document.getElementById('storyboard-grid');
     const libraryGrid = document.getElementById('session-library-grid');
     const libraryEmpty = document.getElementById('session-library-empty');
     const clearLibraryButton = document.getElementById('clear-session-library');
@@ -193,6 +221,7 @@
       prompt: {{ prompt|tojson }},
       createdAt: Date.now()
     };
+    let currentStoryboard = null;
 
     const setVideoError = (message) => {
       videoError.textContent = message;
@@ -264,6 +293,151 @@
         statusEl: videoRewriteStatus
       });
     });
+
+    const workspacePoint = (event) => {
+      const rect = imageEditWorkspace.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(event.clientX - rect.left, rect.width)),
+        y: Math.max(0, Math.min(event.clientY - rect.top, rect.height)),
+        rect
+      };
+    };
+
+    const drawMask = (mask) => {
+      if (!imageMaskBox || !mask) return;
+      imageMaskBox.style.left = `${mask.x}px`;
+      imageMaskBox.style.top = `${mask.y}px`;
+      imageMaskBox.style.width = `${mask.width}px`;
+      imageMaskBox.style.height = `${mask.height}px`;
+      imageMaskBox.classList.remove('hidden');
+    };
+
+    const clearMaskedEditSelection = () => {
+      selectedImageMask = null;
+      drawingMask = false;
+      maskStart = null;
+      imageMaskBox.classList.add('hidden');
+      maskedEditPrompt.value = '';
+    };
+
+    drawMaskButton?.addEventListener('click', () => {
+      drawingMask = true;
+      selectedImageMask = null;
+      imageMaskBox?.classList.add('hidden');
+      maskedEditStatus.textContent = 'Drag a box over the element you want to edit.';
+    });
+
+    imageEditWorkspace?.addEventListener('pointerdown', (event) => {
+      if (!drawingMask) return;
+      event.preventDefault();
+      const point = workspacePoint(event);
+      maskStart = { x: point.x, y: point.y };
+      selectedImageMask = { x: point.x, y: point.y, width: 1, height: 1, image_width: Math.round(point.rect.width), image_height: Math.round(point.rect.height) };
+      drawMask(selectedImageMask);
+    });
+
+    imageEditWorkspace?.addEventListener('pointermove', (event) => {
+      if (!drawingMask || !maskStart) return;
+      const point = workspacePoint(event);
+      selectedImageMask = {
+        x: Math.round(Math.min(maskStart.x, point.x)),
+        y: Math.round(Math.min(maskStart.y, point.y)),
+        width: Math.max(1, Math.round(Math.abs(point.x - maskStart.x))),
+        height: Math.max(1, Math.round(Math.abs(point.y - maskStart.y))),
+        image_width: Math.round(point.rect.width),
+        image_height: Math.round(point.rect.height)
+      };
+      drawMask(selectedImageMask);
+    });
+
+    imageEditWorkspace?.addEventListener('pointerup', () => {
+      if (!drawingMask) return;
+      drawingMask = false;
+      maskStart = null;
+      maskedEditStatus.textContent = 'Mask selected. Add a micro-prompt and apply the edit.';
+    });
+
+    const finalizeMaskedImageEdit = (data, microPrompt) => {
+      if (!data.edited_image_url) {
+        throw new Error('Masked image edit did not return a composited image.');
+      }
+      generatedImage.src = data.edited_image_url;
+      imageEditWorkspace.dataset.imageUrl = data.edited_image_url;
+      imageEditPatches.innerHTML = '';
+      clearMaskedEditSelection();
+      addLibraryItem({
+        type: 'image',
+        url: data.edited_image_url,
+        downloadUrl: data.edited_image_url,
+        prompt: `${imageEditWorkspace.dataset.contextPrompt || 'Edited image'} — ${microPrompt}`,
+        createdAt: Date.now()
+      });
+      const workflowLabel = data.workflow === 'openai-image-edit-mask' ? 'OpenAI image edit completed' : data.workflow === 'flux-inpainting-mask' ? 'FLUX inpainting completed' : 'Masked region edited';
+      maskedEditStatus.textContent = `${workflowLabel}; unmasked pixels were preserved and no overlay frame remains.`;
+    };
+
+    const pollMaskedEditJob = async (statusUrl, microPrompt, attempt = 0) => {
+      if (attempt > 120) {
+        throw new Error('Masked image edit is still running after 10 minutes. Please try again or check server logs.');
+      }
+      const response = await fetch(statusUrl);
+      const data = await parseJsonResponse(response, 'Masked image edit status failed.');
+      if (!response.ok || data.error) {
+        throw new Error(data.error || 'Masked image edit status failed.');
+      }
+      if (data.status === 'completed') {
+        finalizeMaskedImageEdit(data.result || {}, microPrompt);
+        return;
+      }
+      if (data.status === 'failed') {
+        throw new Error(data.error || 'Masked image edit failed.');
+      }
+      maskedEditStatus.textContent = `Masked edit ${data.status || 'running'}... waiting for AI image edit job ${data.job_id || ''}`;
+      await new Promise((resolve) => window.setTimeout(resolve, 5000));
+      return pollMaskedEditJob(statusUrl, microPrompt, attempt + 1);
+    };
+
+    const applyMaskedImageEdit = async () => {
+      if (!imageEditWorkspace || !selectedImageMask) {
+        maskedEditStatus.textContent = 'Draw a mask box first.';
+        return;
+      }
+      const microPrompt = maskedEditPrompt.value.trim();
+      if (!microPrompt) {
+        maskedEditStatus.textContent = 'Enter a micro-prompt for the masked region.';
+        return;
+      }
+      applyMaskedEditButton.disabled = true;
+      maskedEditStatus.textContent = 'Applying masked edit with AI inpainting...';
+      try {
+        const response = await fetch('/image/edit-region', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url: imageEditWorkspace.dataset.imageUrl,
+            context_prompt: imageEditWorkspace.dataset.contextPrompt,
+            micro_prompt: microPrompt,
+            mask: selectedImageMask
+          })
+        });
+        const data = await parseJsonResponse(response, 'Masked image edit failed.');
+        if (response.status === 202 && data.job_id) {
+          maskedEditStatus.textContent = `Masked edit queued as ${data.job_id}. Waiting for AI image edit...`;
+          await pollMaskedEditJob(data.status_url || `/image/edit-region/status/${encodeURIComponent(data.job_id)}`, microPrompt);
+          return;
+        }
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Masked image edit failed.');
+        }
+        finalizeMaskedImageEdit(data, microPrompt);
+      } catch (error) {
+        maskedEditStatus.textContent = error.message;
+      } finally {
+        applyMaskedEditButton.disabled = false;
+      }
+    };
+
+    applyMaskedEditButton?.addEventListener('click', () => applyMaskedImageEdit());
 
     const readLibraryItems = () => {
       try {
@@ -342,6 +516,116 @@
     }
     renderLibrary();
 
+    const resetVideoResult = () => {
+      videoEl.pause();
+      videoEl.classList.add('hidden');
+      videoEl.removeAttribute('src');
+      videoEl.load();
+      videoDownload.classList.add('hidden');
+      videoDownload.href = '#';
+    };
+
+    const renderStoryboard = (storyboard) => {
+      currentStoryboard = storyboard;
+      storyboardGrid.innerHTML = '';
+      storyboardPanel.classList.remove('hidden');
+      const frames = storyboard.frames || [];
+      frames.forEach((frame) => {
+        const card = document.createElement('article');
+        card.className = 'storyboard-frame-card';
+        card.dataset.stage = frame.stage;
+
+        const title = document.createElement('strong');
+        title.textContent = frame.label || frame.stage;
+        const image = document.createElement('img');
+        image.src = frame.url;
+        image.alt = `${frame.label || frame.stage} storyboard frame`;
+        const textarea = document.createElement('textarea');
+        textarea.rows = 3;
+        textarea.value = frame.prompt || '';
+        textarea.setAttribute('aria-label', `${frame.label || frame.stage} frame regeneration prompt`);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'secondary-button storyboard-regenerate-button';
+        button.textContent = `Regenerate ${frame.label || frame.stage}`;
+        button.addEventListener('click', () => regenerateStoryboardFrame(frame.stage, textarea.value, button));
+        card.append(title, image, textarea, button);
+        storyboardGrid.appendChild(card);
+      });
+    };
+
+    const createStoryboard = async () => {
+      const prompt = videoPrompt.value.trim();
+      if (!prompt) {
+        setVideoError('Please enter a prompt before creating a storyboard.');
+        return null;
+      }
+      const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      resetVideoResult();
+      createStoryboardButton.disabled = true;
+      storyboardStatus.textContent = 'Creating start, middle, and end frames...';
+      videoEmpty.classList.add('hidden');
+      videoPanel.classList.remove('hidden');
+      videoTitle.textContent = 'Review your storyboard';
+      videoLine.textContent = 'Create or regenerate frames before submitting the paid I2V job.';
+      try {
+        const response = await fetch('/video/storyboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, aspect_ratio: selectedRatio })
+        });
+        const data = await parseJsonResponse(response, 'Storyboard request failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Storyboard request failed.');
+        }
+        renderStoryboard(data);
+        storyboardStatus.textContent = 'Storyboard ready. Regenerate any frame, then click Generate video.';
+        return data;
+      } catch (error) {
+        setVideoError(error.message);
+        storyboardStatus.textContent = error.message;
+        return null;
+      } finally {
+        createStoryboardButton.disabled = false;
+      }
+    };
+
+    const regenerateStoryboardFrame = async (stage, prompt, button) => {
+      const selectedRatio = videoForm?.querySelector('input[name="aspect_ratio"]:checked')?.value || '16:9';
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Regenerating...';
+      storyboardStatus.textContent = `Regenerating ${stage} frame...`;
+      try {
+        const response = await fetch('/video/storyboard/frame', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            stage,
+            aspect_ratio: selectedRatio,
+            base_prompt: currentStoryboard?.optimized_prompt || videoPrompt.value.trim()
+          })
+        });
+        const data = await parseJsonResponse(response, 'Storyboard frame regeneration failed.');
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Storyboard frame regeneration failed.');
+        }
+        currentStoryboard.frames = currentStoryboard.frames.map((frame) => frame.stage === data.frame.stage ? data.frame : frame);
+        renderStoryboard(currentStoryboard);
+        storyboardStatus.textContent = `${data.frame.label} frame regenerated.`;
+      } catch (error) {
+        setVideoError(error.message);
+        storyboardStatus.textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    };
+
+    createStoryboardButton?.addEventListener('click', () => createStoryboard());
+    videoButton?.addEventListener('click', () => videoForm?.requestSubmit());
+
     const pollVideoJob = async (jobId, attempt = 0, prompt = '') => {
       const response = await fetch(`/video/status/${encodeURIComponent(jobId)}`);
       const data = await parseJsonResponse(response, 'Video status request failed.');
@@ -392,22 +676,34 @@
       videoError.textContent = '';
       videoEmpty.classList.add('hidden');
       videoPanel.classList.remove('hidden');
-      videoEl.classList.add('hidden');
-      videoEl.removeAttribute('src');
-      startFramePreview.classList.add('hidden');
-      startFrameImage.removeAttribute('src');
-      videoDownload.classList.add('hidden');
-      videoDownload.href = '#';
+      resetVideoResult();
       videoTitle.textContent = 'Building and reviewing free start frame...';
       videoLine.textContent = 'Preparing your prompt, generating a free frame, and running permissive Hermes Agent visual review before the paid I2V call...';
       videoButton.disabled = true;
       videoButton.textContent = 'Generating...';
 
       const formData = new FormData(videoForm);
+      const hadStoryboard = Boolean(currentStoryboard);
+      const storyboard = currentStoryboard || await createStoryboard();
+      if (!storyboard) {
+        videoButton.disabled = false;
+        videoButton.textContent = 'Generate video';
+        return;
+      }
+      if (!hadStoryboard) {
+        videoButton.disabled = false;
+        videoButton.textContent = 'Generate video';
+        videoTitle.textContent = 'Review your storyboard';
+        videoLine.textContent = 'Storyboard created. Regenerate any frame if needed, then click Generate video again to submit I2V.';
+        return;
+      }
+      const startFrame = storyboard.frames?.find((frame) => frame.stage === 'start') || storyboard.frames?.[0];
       const payload = {
         prompt: formData.get('prompt'),
+        optimized_prompt: storyboard.optimized_prompt || formData.get('prompt'),
         aspect_ratio: formData.get('aspect_ratio'),
-        generate_audio: formData.get('generate_audio') === 'true'
+        generate_audio: formData.get('generate_audio') === 'true',
+        storyboard_start_frame_url: startFrame?.url
       };
 
       try {
@@ -423,11 +719,7 @@
         if (!data.id) {
           throw new Error('OpenRouter did not return a video job id.');
         }
-        if (data.start_frame_url) {
-          startFrameImage.src = data.start_frame_url;
-          startFramePreview.classList.remove('hidden');
-        }
-        videoTitle.textContent = 'Vision-approved I2V job submitted';
+        videoTitle.textContent = 'Storyboard-approved I2V job submitted';
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';
         const audioNote = data.generate_audio ? ' with generated audio' : '';

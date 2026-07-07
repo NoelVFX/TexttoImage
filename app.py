@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
+import time
+import uuid
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for
+import requests
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context
 
+from FluxInpaint import FluxInpaintError, apply_flux_inpaint
+from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
+from ImageEdit import (
+    ImageEditError,
+    build_inpaint_mask,
+    build_masked_region_edit,
+    build_openai_edit_mask,
+    composite_masked_patch,
+    detect_color_recolor_request,
+    recolor_masked_region,
+)
 from OpenRouterVideo import (
     DEFAULT_VIDEO_ASPECT_RATIO,
     DEFAULT_VIDEO_DURATION,
@@ -17,8 +33,9 @@ from OpenRouterVideo import (
     get_video_content,
     submit_video_job,
 )
-from OrchestratedVideo import VideoOrchestrationError, orchestrate_video_first_frame
+from OrchestratedVideo import FirstFrameResult, VideoOrchestrationError, VisionCritique, orchestrate_video_first_frame
 from PromptRewrite import PromptRewriteError, rewrite_prompt
+from Storyboard import build_storyboard_frames, regenerate_storyboard_frame
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,6 +44,10 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+IMAGE_EDIT_JOBS: dict[str, dict] = {}
+IMAGE_EDIT_JOBS_LOCK = threading.Lock()
+IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
 
 VIDEO_START_FRAME_SIZES = {
     "16:9": (1280, 720),
@@ -40,6 +61,173 @@ def parse_bool(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+STORYBOARD_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+def stable_generation_seed(prompt: str, aspect_ratio: str) -> int:
+    digest = hashlib.sha256(f"{aspect_ratio}|{prompt.strip()}".encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)
+
+
+def download_image_bytes(image_url: str, *, timeout: int = 45) -> tuple[bytes, str]:
+    response = requests.get(image_url, timeout=timeout)
+    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+    if response.status_code != 200:
+        raise ImageEditError(f"Image download returned HTTP {response.status_code}: {response.text[:200]}")
+    if not content_type.startswith("image/"):
+        raise ImageEditError(f"Image download returned non-image content ({content_type}): {response.text[:200]}")
+    return response.content, content_type
+
+
+def materialize_masked_region_edit(edit_payload: dict) -> str:
+    original_bytes, _original_type = download_image_bytes(edit_payload["image_url"])
+    patch_bytes, _patch_type = download_image_bytes(edit_payload["patch_url"])
+    edited_bytes, _content_type = composite_masked_patch(original_bytes, patch_bytes, edit_payload["mask"])
+
+    digest = hashlib.sha256(
+        f"{edit_payload['image_url']}|{edit_payload['patch_url']}|{edit_payload['mask']}".encode("utf-8")
+    ).hexdigest()[:16]
+    filename = f"masked-edit-{digest}.png"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(edited_bytes)
+    return public_generated_url(filename)
+
+
+def materialize_color_recolor_edit(image_url: str, mask: dict, target_rgb: tuple[int, int, int], target_name: str) -> str:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    edited_bytes, _content_type = recolor_masked_region(original_bytes, mask, target_rgb)
+    digest = hashlib.sha256(f"{image_url}|{mask}|{target_name}|color-recolor".encode("utf-8")).hexdigest()[:16]
+    filename = f"masked-recolor-{digest}.png"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(edited_bytes)
+    return public_generated_url(filename)
+
+
+def write_generated_bytes(filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png") -> str:
+    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+    filename = f"{filename_prefix}-{digest}{suffix}"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(content)
+    return public_generated_url(filename)
+
+
+def materialize_flux_inpaint_edit(image_url: str, mask: dict, micro_prompt: str, context_prompt: str | None = None) -> dict:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    mask_bytes, _mask_type = build_inpaint_mask(
+        original_bytes,
+        mask,
+        feather_px=max(0, int(os.getenv("INPAINT_MASK_FEATHER_PX", "4"))),
+    )
+    digest_base = f"{image_url}|{mask}|{micro_prompt}|flux-inpaint"
+    original_image_url = write_generated_bytes("inpaint-source", digest_base, original_bytes)
+    mask_url = write_generated_bytes("inpaint-mask", digest_base, mask_bytes)
+    prompt = build_masked_region_edit(
+        image_url=image_url,
+        micro_prompt=micro_prompt,
+        mask=mask,
+        context_prompt=context_prompt,
+        model_choice=DEFAULT_MODEL,
+    )["patch_prompt"]
+    flux_image_url = apply_flux_inpaint(
+        image_url=original_image_url,
+        mask_url=mask_url,
+        prompt=prompt,
+        image_size=os.getenv("FAL_INPAINT_IMAGE_SIZE") or None,
+    )
+    final_bytes, _final_type = download_image_bytes(flux_image_url)
+    edited_image_url = write_generated_bytes("flux-inpaint", f"{digest_base}|{flux_image_url}", final_bytes)
+    return {
+        "edited_image_url": edited_image_url,
+        "original_image_url": original_image_url,
+        "mask_url": mask_url,
+        "flux_image_url": flux_image_url,
+        "inpaint_prompt": prompt,
+    }
+
+
+def materialize_openai_image_edit(image_url: str, mask: dict, micro_prompt: str, context_prompt: str | None = None) -> dict:
+    original_bytes, _original_type = download_image_bytes(image_url)
+    mask_bytes, _mask_type = build_openai_edit_mask(
+        original_bytes,
+        mask,
+        feather_px=max(0, int(os.getenv("INPAINT_MASK_FEATHER_PX", "4"))),
+    )
+    prompt = build_masked_region_edit(
+        image_url=image_url,
+        micro_prompt=micro_prompt,
+        mask=mask,
+        context_prompt=context_prompt,
+        model_choice=DEFAULT_MODEL,
+    )["patch_prompt"]
+    edited_bytes = apply_openai_image_edit(
+        image_bytes=original_bytes,
+        mask_bytes=mask_bytes,
+        prompt=prompt,
+    )
+    digest_base = f"{image_url}|{mask}|{micro_prompt}|openai-image-edit"
+    edited_image_url = write_generated_bytes("openai-inpaint", digest_base, edited_bytes)
+    return {
+        "edited_image_url": edited_image_url,
+        "inpaint_prompt": prompt,
+    }
+
+
+def selected_inpaint_provider() -> str:
+    provider = os.getenv("INPAINT_PROVIDER", "openai").strip().lower()
+    return provider or "openai"
+
+
+def public_generated_url(filename: str) -> str:
+    public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    path = f"/static/generated/{filename}"
+    if has_request_context():
+        path = url_for("static", filename=f"generated/{filename}")
+    if public_base_url:
+        return f"{public_base_url}{path}"
+    if not has_request_context():
+        return path
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+    if forwarded_host:
+        scheme = forwarded_proto or request.scheme
+        return f"{scheme}://{forwarded_host}{path}"
+    return url_for("static", filename=f"generated/{filename}", _external=True)
+
+
+def materialize_storyboard_frame(frame, *, timeout: int = 30) -> str:
+    """Download a Pollinations storyboard frame and expose it as a stable app-served image URL.
+
+    Some I2V providers reject dynamic image-generator URLs with errors like
+    "failed to process the file". Serving a normal static image file from the
+    app gives OpenRouter/Wan a direct, stable image URL to fetch.
+    """
+    response = requests.get(frame.url, timeout=timeout)
+    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+    if response.status_code != 200:
+        raise RuntimeError(f"Storyboard image download returned HTTP {response.status_code}: {response.text[:200]}")
+    if not content_type.startswith("image/"):
+        raise RuntimeError(f"Storyboard image download returned non-image content ({content_type}): {response.text[:200]}")
+
+    suffix = STORYBOARD_IMAGE_EXTENSIONS.get(content_type, ".jpg")
+    digest = hashlib.sha256(f"{frame.stage}|{frame.seed}|{frame.url}".encode("utf-8")).hexdigest()[:16]
+    filename = f"storyboard-{frame.stage}-{digest}{suffix}"
+    output_path = GENERATED_DIR / filename
+    output_path.write_bytes(response.content)
+    return public_generated_url(filename)
+
+
+def storyboard_frame_payload(frame) -> dict:
+    payload = frame.to_dict()
+    payload["source_url"] = frame.url
+    payload["url"] = materialize_storyboard_frame(frame)
+    return payload
 
 
 def render_index(**overrides):
@@ -103,6 +291,183 @@ def rewrite_generation_prompt():
     )
 
 
+def build_image_edit_payload(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> dict:
+    color_request = detect_color_recolor_request(micro_prompt)
+    if color_request:
+        color_prompt = (
+            f"Change only the selected object's color to {color_request.target_name}. "
+            "Preserve the exact same object shape, size, position, texture, lighting, shadows, and background. "
+            "Do not add, remove, duplicate, resize, or redraw the object."
+        )
+        inpaint_payload = materialize_openai_image_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=color_prompt,
+            context_prompt=context_prompt,
+        )
+        return {
+            "image_url": image_url,
+            "micro_prompt": micro_prompt,
+            "mask": mask,
+            "target_color": color_request.target_name,
+            "workflow": "openai-image-edit-mask",
+            **inpaint_payload,
+        }
+
+    provider = selected_inpaint_provider()
+    if provider == "fal":
+        inpaint_payload = materialize_flux_inpaint_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=micro_prompt,
+            context_prompt=context_prompt,
+        )
+        workflow = "flux-inpainting-mask"
+    elif provider == "openai":
+        inpaint_payload = materialize_openai_image_edit(
+            image_url=image_url,
+            mask=mask,
+            micro_prompt=micro_prompt,
+            context_prompt=context_prompt,
+        )
+        workflow = "openai-image-edit-mask"
+    else:
+        raise ValueError("Unsupported INPAINT_PROVIDER. Use 'openai' or 'fal'.")
+    return {
+        "image_url": image_url,
+        "micro_prompt": micro_prompt,
+        "mask": mask,
+        "workflow": workflow,
+        **inpaint_payload,
+    }
+
+
+def prune_image_edit_jobs(now: float | None = None) -> None:
+    now = now or time.time()
+    with IMAGE_EDIT_JOBS_LOCK:
+        stale_ids = [
+            job_id
+            for job_id, job in IMAGE_EDIT_JOBS.items()
+            if now - float(job.get("created_at", now)) > IMAGE_EDIT_JOB_TTL_SECONDS
+        ]
+        for job_id in stale_ids:
+            IMAGE_EDIT_JOBS.pop(job_id, None)
+
+
+def start_image_edit_job(*, image_url: str, micro_prompt: str, mask: dict, context_prompt: str | None = None) -> str:
+    prune_image_edit_jobs()
+    job_id = f"edit_{uuid.uuid4().hex}"
+    with IMAGE_EDIT_JOBS_LOCK:
+        IMAGE_EDIT_JOBS[job_id] = {
+            "status": "queued",
+            "result": None,
+            "error": None,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+
+    def worker() -> None:
+        with IMAGE_EDIT_JOBS_LOCK:
+            if job_id in IMAGE_EDIT_JOBS:
+                IMAGE_EDIT_JOBS[job_id]["status"] = "running"
+                IMAGE_EDIT_JOBS[job_id]["updated_at"] = time.time()
+        try:
+            with app.app_context():
+                result = build_image_edit_payload(
+                    image_url=image_url,
+                    micro_prompt=micro_prompt,
+                    mask=mask,
+                    context_prompt=context_prompt,
+                )
+            with IMAGE_EDIT_JOBS_LOCK:
+                if job_id in IMAGE_EDIT_JOBS:
+                    IMAGE_EDIT_JOBS[job_id].update(
+                        {"status": "completed", "result": result, "error": None, "updated_at": time.time()}
+                    )
+        except Exception as exc:
+            app.logger.exception("Background masked image edit failed")
+            with IMAGE_EDIT_JOBS_LOCK:
+                if job_id in IMAGE_EDIT_JOBS:
+                    IMAGE_EDIT_JOBS[job_id].update(
+                        {"status": "failed", "result": None, "error": str(exc), "updated_at": time.time()}
+                    )
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
+@app.post("/image/edit-region")
+def edit_image_region():
+    payload = request.get_json(silent=True) or request.form
+    image_url = (payload.get("image_url") or "").strip()
+    micro_prompt = (payload.get("micro_prompt") or payload.get("prompt") or "").strip()
+    context_prompt = (payload.get("context_prompt") or "").strip() or None
+    mask = payload.get("mask") or {}
+
+    if not image_url:
+        return jsonify({"error": "Image URL is required before editing a masked region."}), 400
+    if not micro_prompt:
+        return jsonify({"error": "Please enter a micro-prompt for the masked region."}), 400
+    if not isinstance(mask, dict):
+        return jsonify({"error": "A mask box is required before editing a region."}), 400
+
+    try:
+        run_async = parse_bool(os.getenv("IMAGE_EDIT_ASYNC", "true")) and not parse_bool(payload.get("sync"))
+        if run_async:
+            job_id = start_image_edit_job(
+                image_url=image_url,
+                micro_prompt=micro_prompt,
+                mask=mask,
+                context_prompt=context_prompt,
+            )
+            return jsonify(
+                {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "status_url": url_for("image_edit_region_status", job_id=job_id),
+                    "workflow": "masked-image-edit-async",
+                }
+            ), 202
+
+        edit_payload = build_image_edit_payload(
+            image_url=image_url,
+            micro_prompt=micro_prompt,
+            mask=mask,
+            context_prompt=context_prompt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ImageEditError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except FluxInpaintError as exc:
+        return jsonify({"error": str(exc), "workflow": "flux-inpainting-mask"}), 502
+    except OpenAIImageEditError as exc:
+        return jsonify({"error": str(exc), "workflow": "openai-image-edit-mask"}), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected error while editing masked image region")
+        return jsonify({"error": "Masked image edit failed.", "detail": str(exc)}), 500
+
+    return jsonify(edit_payload)
+
+
+@app.get("/image/edit-region/status/<job_id>")
+def image_edit_region_status(job_id: str):
+    prune_image_edit_jobs()
+    with IMAGE_EDIT_JOBS_LOCK:
+        job = IMAGE_EDIT_JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "Image edit job not found."}), 404
+        payload = {
+            "job_id": job_id,
+            "status": job.get("status", "unknown"),
+            "result": job.get("result"),
+            "error": job.get("error"),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+        }
+    return jsonify(payload)
+
+
 @app.post("/generate")
 def generate():
     prompt = request.form.get("prompt", "").strip()
@@ -129,6 +494,7 @@ def generate():
         model_choice=DEFAULT_MODEL,
         width=width,
         height=height,
+        seed=stable_generation_seed(prompt, selected_ratio),
     )
 
     return render_index(
@@ -137,6 +503,76 @@ def generate():
         image_url=image_url,
         download_url=image_url,
     )
+
+
+@app.post("/video/storyboard")
+def create_video_storyboard():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+
+    if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
+        selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before creating a storyboard."}), 400
+
+    frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    try:
+        frames = build_storyboard_frames(
+            prompt,
+            aspect_ratio=selected_ratio,
+            width=frame_width,
+            height=frame_height,
+            model_choice=DEFAULT_MODEL,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Unexpected error while creating video storyboard")
+        return jsonify({"error": "Storyboard generation failed.", "detail": str(exc)}), 500
+
+    return jsonify(
+        {
+            "prompt": prompt,
+            "optimized_prompt": frames[0].prompt if frames else prompt,
+            "aspect_ratio": selected_ratio,
+            "frames": [storyboard_frame_payload(frame) for frame in frames],
+            "workflow": "pollinations-three-frame-storyboard-before-i2v",
+        }
+    )
+
+
+@app.post("/video/storyboard/frame")
+def regenerate_video_storyboard_frame():
+    payload = request.get_json(silent=True) or request.form
+    prompt = (payload.get("prompt") or "").strip()
+    base_prompt = (payload.get("base_prompt") or "").strip() or None
+    selected_ratio = payload.get("aspect_ratio") or DEFAULT_VIDEO_ASPECT_RATIO
+    stage = payload.get("stage") or "start"
+
+    if selected_ratio not in SUPPORTED_VIDEO_ASPECT_RATIOS:
+        selected_ratio = DEFAULT_VIDEO_ASPECT_RATIO
+    if not prompt:
+        return jsonify({"error": "Please enter a prompt before regenerating a storyboard frame."}), 400
+
+    frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    try:
+        frame = regenerate_storyboard_frame(
+            prompt,
+            stage=stage,
+            aspect_ratio=selected_ratio,
+            width=frame_width,
+            height=frame_height,
+            model_choice=DEFAULT_MODEL,
+            base_prompt=base_prompt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Unexpected error while regenerating storyboard frame")
+        return jsonify({"error": "Storyboard frame regeneration failed.", "detail": str(exc)}), 500
+
+    return jsonify({"frame": storyboard_frame_payload(frame), "workflow": "pollinations-storyboard-frame-regenerated"})
 
 
 @app.post("/video/start")
@@ -153,29 +589,49 @@ def start_video_generation():
         return jsonify({"error": "Please enter a prompt before generating a video."}), 400
 
     frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
+    storyboard_start_frame_url = (payload.get("storyboard_start_frame_url") or payload.get("start_frame_url") or "").strip()
+    storyboard_optimized_prompt = (payload.get("optimized_prompt") or prompt).strip()
 
-    try:
-        first_frame = orchestrate_video_first_frame(
-            prompt,
-            aspect_ratio=selected_ratio,
+    if storyboard_start_frame_url:
+        first_frame = FirstFrameResult(
+            original_prompt=prompt,
+            optimized_prompt=storyboard_optimized_prompt,
+            start_frame_url=storyboard_start_frame_url,
+            critique=VisionCritique(
+                approved=True,
+                confidence=1.0,
+                reason="User-approved storyboard start frame selected before paid I2V submission.",
+                improvements=[],
+                raw_response="",
+            ),
+            attempts=1,
             width=frame_width,
             height=frame_height,
-            model_choice=DEFAULT_MODEL,
-            max_attempts=max(1, int(os.environ.get("VIDEO_ORCHESTRATOR_MAX_ATTEMPTS", "1"))),
+            seed=0,
         )
-    except VideoOrchestrationError as exc:
-        return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        app.logger.exception("Unexpected error while preparing video first frame")
-        return jsonify(
-            {
-                "error": "Video generation failed before the paid I2V job was submitted.",
-                "detail": str(exc),
-                "workflow": "vision-gated-i2v-blocked",
-            }
-        ), 500
+    else:
+        try:
+            first_frame = orchestrate_video_first_frame(
+                prompt,
+                aspect_ratio=selected_ratio,
+                width=frame_width,
+                height=frame_height,
+                model_choice=DEFAULT_MODEL,
+                max_attempts=max(1, int(os.environ.get("VIDEO_ORCHESTRATOR_MAX_ATTEMPTS", "1"))),
+            )
+        except VideoOrchestrationError as exc:
+            return jsonify({"error": str(exc), "workflow": "vision-gated-i2v-blocked"}), 422
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            app.logger.exception("Unexpected error while preparing video first frame")
+            return jsonify(
+                {
+                    "error": "Video generation failed before the paid I2V job was submitted.",
+                    "detail": str(exc),
+                    "workflow": "vision-gated-i2v-blocked",
+                }
+            ), 500
 
     try:
         job = submit_video_job(
