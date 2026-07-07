@@ -71,12 +71,27 @@ class DatabaseConfigTests(unittest.TestCase):
         from Database import build_mongo_uri
 
         uri = build_mongo_uri(
-            "mongo://user:__PASSWORD__@host/db",
+            "mongodb://user:__PASSWORD__@host/db",
             password="secret pass",
         )
 
         self.assertIn("secret+pass", uri)
         self.assertNotIn("<db_password>", uri)
+
+    def test_build_mongo_uri_strips_accidental_env_assignment_prefix(self):
+        from Database import build_mongo_uri
+
+        uri = build_mongo_uri("MONGODB_URI=mongodb+srv://user:pw@example.mongodb.net/?appName=Cluster0")
+
+        self.assertEqual(uri, "mongodb+srv://user:pw@example.mongodb.net/?appName=Cluster0")
+
+    def test_get_database_returns_none_for_invalid_uri_instead_of_crashing_import(self):
+        from Database import get_database
+
+        with patch.dict(os.environ, {"MONGODB_URI": "not-a-mongo-uri"}, clear=False):
+            db = get_database()
+
+        self.assertIsNone(db)
 
 
 class AuthServiceTests(unittest.TestCase):

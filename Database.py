@@ -20,13 +20,18 @@ def load_local_env(path: str | Path | None = None) -> None:
 def build_mongo_uri(uri_template: str | None, *, password: str | None = None) -> str | None:
     if not uri_template or not uri_template.strip():
         return None
-    uri = uri_template.strip()
+    uri = uri_template.strip().strip('"').strip("'")
+    for assignment_prefix in ("MONGODB_URI=", "MONGO_URI="):
+        if uri.startswith(assignment_prefix):
+            uri = uri.split("=", 1)[1].strip().strip('"').strip("'")
     password = password if password is not None else os.getenv("MONGODB_PASSWORD")
     for placeholder in ("<" + "db_password" + ">", "__PASSWORD__"):
         if placeholder in uri:
             if not password:
                 raise RuntimeError("MONGODB_URI contains a password placeholder; set MONGODB_PASSWORD or replace the placeholder.")
             uri = uri.replace(placeholder, quote_plus(password))
+    if not (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
+        raise RuntimeError("MONGODB_URI must begin with mongodb:// or mongodb+srv://")
     return uri
 
 
