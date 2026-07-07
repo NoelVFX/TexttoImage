@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from AuthService import (
     authenticate_user,
@@ -56,7 +57,13 @@ GENERATED_DIR = BASE_DIR / "static" / "generated"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+# Railway and similar platforms terminate HTTPS at a reverse proxy before
+# forwarding traffic to gunicorn over HTTP. ProxyFix makes Flask honor
+# X-Forwarded-Proto/Host so url_for(..., _external=True) builds the same
+# public HTTPS URL Google OAuth has allowlisted.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.config["PREFERRED_URL_SCHEME"] = os.getenv("PREFERRED_URL_SCHEME", "https")
 app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
 
 APP_DB = get_database()
@@ -373,6 +380,36 @@ def google_oauth_config() -> tuple[str | None, str | None]:
     return (os.getenv("GOOGLE_CLIENT_ID"), os.getenv("GOOGLE_CLIENT_SECRET"))
 
 
+def public_external_url(endpoint: str, **values) -> str:
+    """Build a public absolute URL that is safe behind HTTPS proxies.
+
+    Flask's plain url_for(..., _external=True) can produce http:// URLs on
+    Railway because gunicorn receives proxied HTTP even though users visit the
+    public site over HTTPS. Google OAuth redirect URIs must match exactly, so
+    prefer explicit public base env vars and otherwise rely on forwarded proxy
+    headers handled by ProxyFix.
+    """
+    path = url_for(endpoint, **values)
+    public_base_url = (
+        os.getenv("PUBLIC_BASE_URL")
+        or os.getenv("APP_BASE_URL")
+        or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        or ""
+    ).strip().rstrip("/")
+    if public_base_url:
+        if not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"https://{public_base_url}"
+        return f"{public_base_url}{path}"
+    return url_for(endpoint, _external=True, **values)
+
+
+def google_redirect_uri() -> str:
+    explicit_redirect_uri = (os.getenv("GOOGLE_REDIRECT_URI") or "").strip()
+    if explicit_redirect_uri:
+        return explicit_redirect_uri
+    return public_external_url("auth_google_callback")
+
+
 @app.get("/auth/google")
 def auth_google():
     db, error_response = require_db()
@@ -383,7 +420,7 @@ def auth_google():
         return jsonify({"error": "Google login is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}), 503
     state = secrets.token_urlsafe(24)
     session["google_oauth_state"] = state
-    redirect_uri = url_for("auth_google_callback", _external=True)
+    redirect_uri = google_redirect_uri()
     query = urlencode(
         {
             "client_id": client_id,
@@ -419,7 +456,7 @@ def auth_google_callback():
             "code": code,
             "client_id": client_id,
             "client_secret": client_secret,
-            "redirect_uri": url_for("auth_google_callback", _external=True),
+            "redirect_uri": google_redirect_uri(),
             "grant_type": "authorization_code",
         },
         timeout=20,

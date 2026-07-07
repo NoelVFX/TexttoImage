@@ -54,7 +54,8 @@ Optional variables:
 - `MONGODB_PASSWORD` - password used to replace `<db_password>` in `MONGODB_URI`
 - `MONGODB_DB` - database name; defaults to `tti_app`
 - `FLASK_SECRET_KEY` - long random string used to sign login sessions
-- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` - optional Google OAuth credentials for `/auth/google`; add the deployed callback URL `/auth/google/callback` in Google Cloud Console
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` - optional Google OAuth credentials for `/auth/google`; add the deployed callback URL `/auth/google/callback` in Google Cloud Console. On Railway, the app honors forwarded HTTPS proxy headers so the callback is generated as `https://.../auth/google/callback`.
+- `GOOGLE_REDIRECT_URI` - optional exact Google OAuth callback override, useful if Google still reports `redirect_uri_mismatch`; set it to the exact allowlisted URL such as `https://texttoimage-production-f09d.up.railway.app/auth/google/callback`
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message

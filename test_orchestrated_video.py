@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 import app
@@ -925,6 +926,41 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("accounts.google.com", response.location)
         self.assertIn("client_id=client123", response.location)
+
+    def test_google_login_uses_forwarded_https_redirect_uri_on_railway(self):
+        app.APP_DB = FakeDatabase()
+        headers = {
+            "Host": "texttoimage-production-f09d.up.railway.app",
+            "X-Forwarded-Host": "texttoimage-production-f09d.up.railway.app",
+            "X-Forwarded-Proto": "https",
+        }
+        with patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "client123", "GOOGLE_CLIENT_SECRET": "secret123"}, clear=False):
+            response = self.client.get("/auth/google", headers=headers)
+
+        self.assertEqual(response.status_code, 302)
+        params = parse_qs(urlparse(response.location).query)
+        self.assertEqual(
+            params["redirect_uri"],
+            ["https://texttoimage-production-f09d.up.railway.app/auth/google/callback"],
+        )
+
+    def test_google_login_can_use_explicit_redirect_uri_override(self):
+        app.APP_DB = FakeDatabase()
+        redirect_uri = "https://texttoimage-production-f09d.up.railway.app/auth/google/callback"
+        with patch.dict(
+            os.environ,
+            {
+                "GOOGLE_CLIENT_ID": "client123",
+                "GOOGLE_CLIENT_SECRET": "secret123",
+                "GOOGLE_REDIRECT_URI": redirect_uri,
+            },
+            clear=False,
+        ):
+            response = self.client.get("/auth/google")
+
+        self.assertEqual(response.status_code, 302)
+        params = parse_qs(urlparse(response.location).query)
+        self.assertEqual(params["redirect_uri"], [redirect_uri])
 
     @patch("app.requests.get")
     @patch("app.requests.post")
