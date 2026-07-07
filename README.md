@@ -14,6 +14,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
 - Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
 - User auth API backed by MongoDB: register, login, logout, current user, and per-user generation history
+- Billing/credits page for logged-in users showing the current plan, image/video credit balances, and placeholder plan cards ready for a future Stripe Checkout integration
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips

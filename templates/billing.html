@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Billing & credits</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page-shell">
+    <section class="hero billing-hero">
+      <p class="eyebrow">Account billing</p>
+      <h1>Billing & credits</h1>
+      <p class="subtitle">Manage your plan and see the credits available for image edits, image generation, and video workflows.</p>
+      <div class="prompt-tools billing-nav">
+        <a class="secondary-button" href="/">Back to generator</a>
+      </div>
+    </section>
+
+    <section class="media-section billing-summary-section">
+      <div class="section-heading">
+        <p class="eyebrow">Current plan</p>
+        <h2>{{ plan.name }}</h2>
+        <p class="section-copy">Signed in as {{ user.display_name or user.email }}. Checkout is not connected yet; these controls are ready for a future Stripe Checkout integration.</p>
+      </div>
+      <section class="billing-summary-grid">
+        <article class="card billing-summary-card">
+          <span>Current plan</span>
+          <strong>{{ plan.name }}</strong>
+        </article>
+        <article class="card billing-summary-card">
+          <span>Image credits</span>
+          <strong>{{ credits.image }}</strong>
+        </article>
+        <article class="card billing-summary-card">
+          <span>Video credits</span>
+          <strong>{{ credits.video }}</strong>
+        </article>
+      </section>
+    </section>
+
+    <section class="media-section">
+      <div class="section-heading">
+        <p class="eyebrow">Plans</p>
+        <h2>Choose a credit bundle</h2>
+        <p class="section-copy">Plan buttons are placeholders until Stripe Checkout is configured with real price IDs and webhook fulfillment.</p>
+      </div>
+      <section class="plan-grid">
+        {% for option in plans %}
+          <article class="card plan-card {% if option.id == plan.id %}current-plan{% endif %}">
+            <div>
+              <p class="eyebrow">{{ option.name }}</p>
+              <h2>{{ option.price }}<small>/{{ option.period }}</small></h2>
+            </div>
+            <div class="credit-list">
+              <span>{{ option.image_credits }} image credits</span>
+              <span>{{ option.video_credits }} video credits</span>
+            </div>
+            <ul>
+              {% for feature in option.features %}
+                <li>{{ feature }}</li>
+              {% endfor %}
+            </ul>
+            <button type="button" class="secondary-button" disabled>
+              {% if option.id == plan.id %}Current plan{% else %}{{ option.cta }}{% endif %}
+            </button>
+          </article>
+        {% endfor %}
+      </section>
+    </section>
+  </main>
+</body>
+</html>

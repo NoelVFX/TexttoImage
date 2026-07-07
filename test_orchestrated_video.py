@@ -98,7 +98,7 @@ class DatabaseConfigTests(unittest.TestCase):
 
 class AuthServiceTests(unittest.TestCase):
     def test_create_and_authenticate_user_hashes_password(self):
-        from AuthService import authenticate_user, create_user, ensure_auth_indexes
+        from AuthService import authenticate_user, create_user, ensure_auth_indexes, serialize_user
 
         db = FakeDatabase()
         ensure_auth_indexes(db)
@@ -106,6 +106,12 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertEqual(user["email"], "test@example.com")
         self.assertNotEqual(db["users"].items[0]["password_hash"], "safe-password")
+        self.assertEqual(user["plan_id"], "free")
+        self.assertEqual(user["credits"]["image"], 25)
+        self.assertEqual(user["credits"]["video"], 3)
+        serialized = serialize_user(user)
+        self.assertEqual(serialized["plan"]["id"], "free")
+        self.assertEqual(serialized["credits"]["image"], 25)
         self.assertIsNotNone(authenticate_user(db, "test@example.com", "safe-password"))
         self.assertIsNone(authenticate_user(db, "test@example.com", "wrong"))
 
@@ -976,6 +982,60 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"id=\"login-form\"", response.data)
         self.assertIn(b"Continue with Google", response.data)
 
+    def test_index_links_to_billing_when_logged_in(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "billing-link@example.com", "password": "safe-password", "display_name": "Billing Link"},
+        )
+
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"href=\"/billing\"", response.data)
+        self.assertIn(b"Billing & credits", response.data)
+
+    def test_billing_page_requires_login(self):
+        response = self.client.get("/billing")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.location)
+
+    def test_billing_page_shows_current_plan_credits_and_plan_cards(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "billing@example.com", "password": "safe-password", "display_name": "Billing"},
+        )
+
+        response = self.client.get("/billing")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Billing & credits", response.data)
+        self.assertIn(b"Current plan", response.data)
+        self.assertIn(b"Free", response.data)
+        self.assertIn(b"Image credits", response.data)
+        self.assertIn(b"Video credits", response.data)
+        self.assertIn(b"Starter", response.data)
+        self.assertIn(b"Creator", response.data)
+        self.assertIn(b"Pro", response.data)
+
+    def test_billing_status_returns_current_user_plan_and_credits(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "billing-api@example.com", "password": "safe-password", "display_name": "Billing API"},
+        )
+
+        response = self.client.get("/billing/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["plan"]["id"], "free")
+        self.assertEqual(payload["plan"]["name"], "Free")
+        self.assertEqual(payload["credits"]["image"], 25)
+        self.assertEqual(payload["credits"]["video"], 3)
+
     def test_google_login_redirects_to_google_oauth_when_configured(self):
         app.APP_DB = FakeDatabase()
         with patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "client123", "GOOGLE_CLIENT_SECRET": "secret123"}, clear=False):
@@ -1071,6 +1131,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"sessionLibraryKeyForUser", response.data)
         self.assertIn(b"activeLibraryUserId", response.data)
         self.assertIn(b"renderLibraryForUser", response.data)
+        self.assertIn(b"loadAccountHistory();", response.data)
         self.assertNotIn(b"box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.75)", response.data)
 
     @patch("app.start_image_edit_job")

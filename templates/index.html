@@ -24,6 +24,7 @@
         <div class="account-status-panel {% if not is_logged_in %}hidden{% endif %}" id="account-status-panel">
           <p class="status-line" id="account-status-line">Checking account...</p>
           <div class="prompt-tools">
+            <a class="secondary-button" href="/billing">Billing & credits</a>
             <button type="button" class="secondary-button" id="refresh-history-button">Refresh history</button>
             <button type="button" class="secondary-button" id="logout-button">Logout</button>
           </div>
@@ -588,6 +589,7 @@
         createdAt: Date.now()
       });
       const workflowLabel = data.workflow === 'openai-image-edit-mask' ? 'OpenAI image edit completed' : data.workflow === 'flux-inpainting-mask' ? 'FLUX inpainting completed' : 'Masked region edited';
+      if (data.edited_image_url) loadAccountHistory();
       maskedEditStatus.textContent = `${workflowLabel}; unmasked pixels were preserved and no overlay frame remains.`;
     };
 

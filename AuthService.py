@@ -5,6 +5,25 @@ from typing import Any
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+DEFAULT_PLAN_ID = "free"
+DEFAULT_CREDITS = {"image": 25, "video": 3}
+PLAN_NAMES = {
+    "free": "Free",
+    "starter": "Starter",
+    "creator": "Creator",
+    "pro": "Pro",
+}
+
+
+def plan_payload(plan_id: str | None) -> dict[str, str]:
+    plan_id = (plan_id or DEFAULT_PLAN_ID).strip().lower() or DEFAULT_PLAN_ID
+    return {"id": plan_id, "name": PLAN_NAMES.get(plan_id, plan_id.title())}
+
+
+def credits_payload(credits: dict[str, Any] | None) -> dict[str, int]:
+    merged = {**DEFAULT_CREDITS, **(credits or {})}
+    return {"image": int(merged.get("image", 0)), "video": int(merged.get("video", 0))}
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -28,6 +47,8 @@ def serialize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
         "id": str(user.get("_id")),
         "email": user.get("email"),
         "display_name": user.get("display_name") or user.get("email"),
+        "plan": plan_payload(user.get("plan_id")),
+        "credits": credits_payload(user.get("credits")),
         "created_at": user.get("created_at").isoformat() if hasattr(user.get("created_at"), "isoformat") else user.get("created_at"),
     }
 
@@ -43,6 +64,8 @@ def create_user(db, *, email: str, password: str, display_name: str | None = Non
         "email": email,
         "display_name": (display_name or email).strip(),
         "password_hash": generate_password_hash(password),
+        "plan_id": DEFAULT_PLAN_ID,
+        "credits": DEFAULT_CREDITS.copy(),
         "created_at": now,
         "updated_at": now,
     }
@@ -96,7 +119,7 @@ def upsert_google_user(db, *, google_id: str, email: str, display_name: str | No
         db["users"].update_one({"_id": existing["_id"]}, {"$set": update})
         existing.update(update)
         return existing
-    document = {**update, "created_at": now}
+    document = {**update, "plan_id": DEFAULT_PLAN_ID, "credits": DEFAULT_CREDITS.copy(), "created_at": now}
     result = db["users"].insert_one(document)
     document["_id"] = result.inserted_id
     return document

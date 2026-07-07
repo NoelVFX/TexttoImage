@@ -14,11 +14,13 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from AuthService import (
+    DEFAULT_CREDITS,
     authenticate_user,
     create_user,
     ensure_auth_indexes,
     get_user_by_id,
     list_generation_history,
+    plan_payload,
     record_generation_history,
     serialize_user,
     upsert_google_user,
@@ -81,6 +83,49 @@ VIDEO_START_FRAME_SIZES = {
     "16:9": (1280, 720),
     "9:16": (720, 1280),
 }
+
+BILLING_PLANS = [
+    {
+        "id": "free",
+        "name": "Free",
+        "price": "$0",
+        "period": "forever",
+        "image_credits": DEFAULT_CREDITS["image"],
+        "video_credits": DEFAULT_CREDITS["video"],
+        "features": ["Pollinations image generation", "OpenAI masked edits", "Starter video trials"],
+        "cta": "Current starter plan",
+    },
+    {
+        "id": "starter",
+        "name": "Starter",
+        "price": "$9",
+        "period": "month",
+        "image_credits": 250,
+        "video_credits": 30,
+        "features": ["More image generations", "More masked edits", "Priority history retention"],
+        "cta": "Checkout coming soon",
+    },
+    {
+        "id": "creator",
+        "name": "Creator",
+        "price": "$29",
+        "period": "month",
+        "image_credits": 1200,
+        "video_credits": 150,
+        "features": ["Creator credit pool", "Storyboard workflow", "Higher video allowance"],
+        "cta": "Checkout coming soon",
+    },
+    {
+        "id": "pro",
+        "name": "Pro",
+        "price": "$99",
+        "period": "month",
+        "image_credits": 6000,
+        "video_credits": 800,
+        "features": ["Team-scale credits", "Production usage", "Priority support placeholder"],
+        "cta": "Contact sales soon",
+    },
+]
 
 
 def parse_bool(value) -> bool:
@@ -370,6 +415,33 @@ def auth_history():
         return jsonify({"error": "Not logged in."}), 401
     limit = max(1, min(100, int(request.args.get("limit", "50"))))
     return jsonify({"items": list_generation_history(db, user_id=user_id, limit=limit)})
+
+
+def current_billing_payload(user: dict) -> dict:
+    serialized = serialize_user(user) or {}
+    return {
+        "user": serialized,
+        "plan": serialized.get("plan") or plan_payload(user.get("plan_id")),
+        "credits": serialized.get("credits") or DEFAULT_CREDITS.copy(),
+        "plans": BILLING_PLANS,
+        "checkout_enabled": False,
+    }
+
+
+@app.get("/billing")
+def billing_page():
+    user = current_user()
+    if not user:
+        return redirect(url_for("login_page"))
+    return render_template("billing.html", **current_billing_payload(user))
+
+
+@app.get("/billing/status")
+def billing_status():
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Not logged in."}), 401
+    return jsonify(current_billing_payload(user))
 
 
 @app.get("/login")
