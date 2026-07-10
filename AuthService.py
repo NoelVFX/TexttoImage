@@ -38,6 +38,7 @@ def ensure_auth_indexes(db) -> None:
     db["users"].create_index("google_id")
     db["generation_history"].create_index("user_id")
     db["generation_history"].create_index("created_at")
+    db["credit_purchases"].create_index("stripe_session_id", unique=True)
 
 
 def serialize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -168,3 +169,64 @@ def serialize_history_item(item: dict[str, Any]) -> dict[str, Any]:
 def list_generation_history(db, *, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
     cursor = db["generation_history"].find({"user_id": str(user_id)}).sort("created_at", -1).limit(limit)
     return [serialize_history_item(item) for item in cursor]
+
+
+def update_user_billing(db, user: dict[str, Any], *, plan_id: str | None = None, credits: dict[str, int] | None = None) -> dict[str, Any]:
+    update: dict[str, Any] = {"updated_at": utc_now()}
+    if plan_id is not None:
+        update["plan_id"] = plan_payload(plan_id)["id"]
+    if credits is not None:
+        update["credits"] = credits_payload(credits)
+    db["users"].update_one({"_id": user["_id"]}, {"$set": update})
+    updated = {**user, **update}
+    return updated
+
+
+def add_credits(db, *, user_id: str, image: int = 0, video: int = 0, plan_id: str | None = None) -> dict[str, Any] | None:
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return None
+    credits = credits_payload(user.get("credits"))
+    credits["image"] = max(0, credits["image"] + int(image))
+    credits["video"] = max(0, credits["video"] + int(video))
+    return update_user_billing(db, user, plan_id=plan_id, credits=credits)
+
+
+def spend_credit(db, *, user_id: str, credit_type: str, amount: int = 1) -> tuple[bool, dict[str, Any] | None]:
+    if credit_type not in {"image", "video"}:
+        raise ValueError("credit_type must be 'image' or 'video'.")
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return False, None
+    credits = credits_payload(user.get("credits"))
+    amount = max(1, int(amount))
+    if credits.get(credit_type, 0) < amount:
+        return False, user
+    credits[credit_type] -= amount
+    return True, update_user_billing(db, user, credits=credits)
+
+
+def record_credit_purchase(
+    db,
+    *,
+    user_id: str,
+    stripe_session_id: str,
+    plan_id: str,
+    image_credits: int,
+    video_credits: int,
+) -> tuple[bool, dict[str, Any] | None]:
+    existing = db["credit_purchases"].find_one({"stripe_session_id": stripe_session_id})
+    if existing:
+        return False, get_user_by_id(db, user_id)
+    now = utc_now()
+    db["credit_purchases"].insert_one(
+        {
+            "user_id": str(user_id),
+            "stripe_session_id": stripe_session_id,
+            "plan_id": plan_id,
+            "image_credits": int(image_credits),
+            "video_credits": int(video_credits),
+            "created_at": now,
+        }
+    )
+    return True, add_credits(db, user_id=user_id, image=image_credits, video=video_credits, plan_id=plan_id)

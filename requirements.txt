@@ -5,3 +5,4 @@ hermes-agent==0.18.0
 Pillow==12.2.0
 pymongo==4.10.1
 dnspython==2.7.0
+stripe==12.5.0

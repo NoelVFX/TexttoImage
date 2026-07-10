@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Billing success</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page-shell">
+    <section class="hero billing-hero">
+      <p class="eyebrow">Stripe checkout</p>
+      <h1>Billing update</h1>
+      <p class="subtitle">{{ message }}</p>
+      <div class="prompt-tools billing-nav">
+        <a class="secondary-button" href="/billing">View billing & credits</a>
+        <a class="secondary-button" href="/">Back to generator</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

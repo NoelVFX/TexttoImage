@@ -21,7 +21,7 @@
       <div class="section-heading">
         <p class="eyebrow">Current plan</p>
         <h2>{{ plan.name }}</h2>
-        <p class="section-copy">Signed in as {{ user.display_name or user.email }}. Checkout is not connected yet; these controls are ready for a future Stripe Checkout integration.</p>
+        <p class="section-copy">Signed in as {{ user.display_name or user.email }}. Purchases use Stripe-hosted Checkout. Credits are added after Stripe confirms payment.</p>
       </div>
       <section class="billing-summary-grid">
         <article class="card billing-summary-card">
@@ -43,7 +43,7 @@
       <div class="section-heading">
         <p class="eyebrow">Plans</p>
         <h2>Choose a credit bundle</h2>
-        <p class="section-copy">Plan buttons are placeholders until Stripe Checkout is configured with real price IDs and webhook fulfillment.</p>
+        <p class="section-copy">Click a paid plan to open Stripe Checkout. If Stripe is not configured, the button will show a setup error instead of creating a charge.</p>
       </div>
       <section class="plan-grid">
         {% for option in plans %}
@@ -61,13 +61,39 @@
                 <li>{{ feature }}</li>
               {% endfor %}
             </ul>
-            <button type="button" class="secondary-button" disabled>
-              {% if option.id == plan.id %}Current plan{% else %}{{ option.cta }}{% endif %}
-            </button>
+            {% if option.id == plan.id %}
+              <button type="button" class="secondary-button" disabled>Current plan</button>
+            {% elif option.id == 'free' %}
+              <button type="button" class="secondary-button" disabled>Free plan</button>
+            {% else %}
+              <button type="button" class="secondary-button checkout-plan-button" data-plan-id="{{ option.id }}">{{ option.cta }}</button>
+            {% endif %}
           </article>
         {% endfor %}
       </section>
+      <p class="prompt-rewrite-status" id="billing-message" aria-live="polite"></p>
     </section>
   </main>
+  <script>
+    const billingMessage = document.getElementById('billing-message');
+    document.querySelectorAll('.checkout-plan-button').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Opening Stripe...';
+        billingMessage.textContent = '';
+        try {
+          const response = await fetch(`/billing/checkout/${encodeURIComponent(button.dataset.planId)}`, { method: 'POST' });
+          const data = await response.json();
+          if (!response.ok || data.error) throw new Error(data.error || 'Could not start checkout.');
+          window.location.href = data.checkout_url;
+        } catch (error) {
+          billingMessage.textContent = error.message;
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+      });
+    });
+  </script>
 </body>
 </html>

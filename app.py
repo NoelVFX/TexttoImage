@@ -13,16 +13,24 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+try:
+    import stripe
+except ImportError:  # pragma: no cover - handled as config error at runtime
+    stripe = None
+
 from AuthService import (
     DEFAULT_CREDITS,
+    add_credits,
     authenticate_user,
     create_user,
     ensure_auth_indexes,
     get_user_by_id,
     list_generation_history,
     plan_payload,
+    record_credit_purchase,
     record_generation_history,
     serialize_user,
+    spend_credit,
     upsert_google_user,
 )
 from Database import get_database
@@ -92,6 +100,7 @@ BILLING_PLANS = [
         "period": "forever",
         "image_credits": DEFAULT_CREDITS["image"],
         "video_credits": DEFAULT_CREDITS["video"],
+        "price_env": None,
         "features": ["Pollinations image generation", "OpenAI masked edits", "Starter video trials"],
         "cta": "Current starter plan",
     },
@@ -102,8 +111,9 @@ BILLING_PLANS = [
         "period": "month",
         "image_credits": 250,
         "video_credits": 30,
+        "price_env": "STRIPE_PRICE_STARTER",
         "features": ["More image generations", "More masked edits", "Priority history retention"],
-        "cta": "Checkout coming soon",
+        "cta": "Buy Starter",
     },
     {
         "id": "creator",
@@ -112,8 +122,9 @@ BILLING_PLANS = [
         "period": "month",
         "image_credits": 1200,
         "video_credits": 150,
+        "price_env": "STRIPE_PRICE_CREATOR",
         "features": ["Creator credit pool", "Storyboard workflow", "Higher video allowance"],
-        "cta": "Checkout coming soon",
+        "cta": "Buy Creator",
     },
     {
         "id": "pro",
@@ -122,8 +133,9 @@ BILLING_PLANS = [
         "period": "month",
         "image_credits": 6000,
         "video_credits": 800,
+        "price_env": "STRIPE_PRICE_PRO",
         "features": ["Team-scale credits", "Production usage", "Priority support placeholder"],
-        "cta": "Contact sales soon",
+        "cta": "Buy Pro",
     },
 ]
 
@@ -417,6 +429,93 @@ def auth_history():
     return jsonify({"items": list_generation_history(db, user_id=user_id, limit=limit)})
 
 
+def plan_by_id(plan_id: str) -> dict | None:
+    return next((plan for plan in BILLING_PLANS if plan["id"] == plan_id), None)
+
+
+def stripe_secret_key() -> str:
+    return (os.getenv("STRIPE_SECRET_KEY") or "").strip()
+
+
+def stripe_webhook_secret() -> str:
+    return (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
+
+
+def stripe_checkout_enabled() -> bool:
+    return bool(stripe_secret_key()) and stripe is not None
+
+
+def stripe_success_url() -> str:
+    return public_external_url("billing_success") + "?session_id={CHECKOUT_SESSION_ID}"
+
+
+def stripe_cancel_url() -> str:
+    return public_external_url("billing_page")
+
+
+def checkout_session_payload_for_plan(plan: dict, user: dict) -> dict:
+    metadata = {
+        "user_id": str(user.get("_id")),
+        "plan_id": plan["id"],
+        "image_credits": str(plan["image_credits"]),
+        "video_credits": str(plan["video_credits"]),
+    }
+    price_id = (os.getenv(plan.get("price_env") or "") or "").strip()
+    line_item = {"quantity": 1}
+    if price_id:
+        line_item["price"] = price_id
+    else:
+        amount = {"starter": 900, "creator": 2900, "pro": 9900}.get(plan["id"])
+        if amount is None:
+            raise ValueError("Free plan does not require checkout.")
+        line_item["price_data"] = {
+            "currency": "usd",
+            "unit_amount": amount,
+            "product_data": {
+                "name": f"{plan['name']} credits",
+                "description": f"{plan['image_credits']} image credits and {plan['video_credits']} video credits",
+            },
+        }
+    return {
+        "mode": "payment",
+        "customer_email": user.get("email"),
+        "line_items": [line_item],
+        "success_url": stripe_success_url(),
+        "cancel_url": stripe_cancel_url(),
+        "metadata": metadata,
+        "client_reference_id": str(user.get("_id")),
+    }
+
+
+def create_stripe_checkout_session(plan: dict, user: dict):
+    if stripe is None:
+        raise RuntimeError("Stripe SDK is not installed.")
+    key = stripe_secret_key()
+    if not key:
+        raise RuntimeError("Set STRIPE_SECRET_KEY to enable Stripe Checkout.")
+    stripe.api_key = key
+    return stripe.checkout.Session.create(**checkout_session_payload_for_plan(plan, user))
+
+
+def fulfill_checkout_session(checkout_session: dict) -> dict:
+    metadata = checkout_session.get("metadata") or {}
+    db = current_db()
+    if db is None:
+        raise RuntimeError("MongoDB database is not configured.")
+    paid = checkout_session.get("payment_status") in {"paid", "no_payment_required"}
+    if not paid:
+        raise RuntimeError("Checkout session is not paid yet.")
+    changed, user = record_credit_purchase(
+        db,
+        user_id=metadata.get("user_id", ""),
+        stripe_session_id=checkout_session.get("id", ""),
+        plan_id=metadata.get("plan_id", "free"),
+        image_credits=int(metadata.get("image_credits") or 0),
+        video_credits=int(metadata.get("video_credits") or 0),
+    )
+    return {"credited": changed, "user": serialize_user(user) if user else None}
+
+
 def current_billing_payload(user: dict) -> dict:
     serialized = serialize_user(user) or {}
     return {
@@ -424,7 +523,7 @@ def current_billing_payload(user: dict) -> dict:
         "plan": serialized.get("plan") or plan_payload(user.get("plan_id")),
         "credits": serialized.get("credits") or DEFAULT_CREDITS.copy(),
         "plans": BILLING_PLANS,
-        "checkout_enabled": False,
+        "checkout_enabled": stripe_checkout_enabled(),
     }
 
 
@@ -442,6 +541,56 @@ def billing_status():
     if not user:
         return jsonify({"error": "Not logged in."}), 401
     return jsonify(current_billing_payload(user))
+
+
+@app.post("/billing/checkout/<plan_id>")
+def billing_checkout(plan_id: str):
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Not logged in."}), 401
+    plan = plan_by_id(plan_id)
+    if not plan or plan["id"] == "free":
+        return jsonify({"error": "Choose a paid plan."}), 400
+    try:
+        checkout_session = create_stripe_checkout_session(plan, user)
+    except Exception as exc:
+        app.logger.exception("Stripe Checkout Session creation failed")
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"checkout_url": checkout_session.url, "session_id": checkout_session.id})
+
+
+@app.get("/billing/success")
+def billing_success():
+    session_id = (request.args.get("session_id") or "").strip()
+    message = "Payment complete. Your credits will appear after Stripe confirms the checkout."
+    if session_id and stripe is not None and stripe_secret_key():
+        try:
+            stripe.api_key = stripe_secret_key()
+            checkout_session = stripe.checkout.Session.retrieve(session_id)
+            fulfill_checkout_session(dict(checkout_session))
+            message = "Payment complete. Credits added to your account."
+        except Exception:
+            app.logger.exception("Could not fulfill Stripe success redirect")
+    return render_template("billing_success.html", message=message)
+
+
+@app.post("/stripe/webhook")
+def stripe_webhook():
+    if stripe is None:
+        return jsonify({"error": "Stripe SDK is not installed."}), 503
+    payload = request.get_data()
+    signature = request.headers.get("Stripe-Signature")
+    secret = stripe_webhook_secret()
+    if not secret:
+        return jsonify({"error": "Set STRIPE_WEBHOOK_SECRET to enable Stripe webhook fulfillment."}), 503
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, secret)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if event.get("type") == "checkout.session.completed":
+        fulfill_checkout_session(event["data"]["object"])
+    return jsonify({"received": True})
 
 
 @app.get("/login")
@@ -590,6 +739,29 @@ def rewrite_generation_prompt():
             "aspect_ratio": aspect_ratio,
         }
     )
+
+
+def require_and_spend_credit(credit_type: str):
+    db, error_response = require_db()
+    if error_response:
+        return None, error_response
+    user_id = current_user_id()
+    if not user_id:
+        return None, (jsonify({"error": "Login is required to generate media."}), 401)
+    ok, user = spend_credit(db, user_id=user_id, credit_type=credit_type)
+    if not ok:
+        credits = serialize_user(user).get("credits", {}) if user else {}
+        return None, (
+            jsonify(
+                {
+                    "error": f"Not enough {credit_type} credits. Please buy more credits on the billing page.",
+                    "credits": credits,
+                    "billing_url": url_for("billing_page"),
+                }
+            ),
+            402,
+        )
+    return user, None
 
 
 def record_masked_edit_history(*, user_id: str | None, edit_payload: dict, context_prompt: str | None = None) -> None:
@@ -746,6 +918,10 @@ def edit_image_region():
     if not isinstance(mask, dict):
         return jsonify({"error": "A mask box is required before editing a region."}), 400
 
+    _user, credit_error = require_and_spend_credit("image")
+    if credit_error:
+        return credit_error
+
     try:
         run_async = parse_bool(os.getenv("IMAGE_EDIT_ASYNC", "true")) and not parse_bool(payload.get("sync"))
         if run_async:
@@ -821,6 +997,14 @@ def generate():
         ), 400
 
     width, height = SUPPORTED_ASPECT_RATIOS[selected_ratio]
+
+    _user, credit_error = require_and_spend_credit("image")
+    if credit_error:
+        return render_index(
+            selected_ratio=selected_ratio,
+            prompt=prompt,
+            error=credit_error[0].get_json().get("error", "Not enough image credits."),
+        ), credit_error[1]
 
     # Build the Pollinations URL and let the browser load the image directly.
     # This avoids the Flask request hanging when WSL cannot resolve/reach
@@ -939,6 +1123,10 @@ def start_video_generation():
 
     if not prompt:
         return jsonify({"error": "Please enter a prompt before generating a video."}), 400
+
+    _user, credit_error = require_and_spend_credit("video")
+    if credit_error:
+        return credit_error
 
     frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
     storyboard_start_frame_url = (payload.get("storyboard_start_frame_url") or payload.get("start_frame_url") or "").strip()

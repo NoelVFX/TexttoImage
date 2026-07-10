@@ -450,7 +450,9 @@
       accountStatusPanel?.classList.toggle('hidden', !loggedIn);
       googleLoginRow?.classList.toggle('hidden', loggedIn);
       setAuthenticatedContentVisible(loggedIn);
-      accountStatusLine.textContent = loggedIn ? `Logged in as ${user.display_name || user.email}` : 'Not logged in.';
+      const credits = user?.credits || {};
+      const creditLabel = loggedIn ? ` · Image credits: ${credits.image ?? 0} · Video credits: ${credits.video ?? 0}` : '';
+      accountStatusLine.textContent = loggedIn ? `Logged in as ${user.display_name || user.email}${creditLabel}` : 'Not logged in.';
       renderLibraryForUser(user);
       if (loggedIn) loadAccountHistory();
       else renderAccountHistory([]);
@@ -639,6 +641,7 @@
         });
         const data = await parseJsonResponse(response, 'Masked image edit failed.');
         if (response.status === 202 && data.job_id) {
+          loadCurrentUser();
           maskedEditStatus.textContent = `Masked edit queued as ${data.job_id}. Waiting for AI image edit...`;
           await pollMaskedEditJob(data.status_url || `/image/edit-region/status/${encodeURIComponent(data.job_id)}`, microPrompt);
           return;
@@ -646,6 +649,7 @@
         if (!response.ok || data.error) {
           throw new Error(data.error || 'Masked image edit failed.');
         }
+        loadCurrentUser();
         finalizeMaskedImageEdit(data, microPrompt);
       } catch (error) {
         maskedEditStatus.textContent = error.message;
@@ -938,6 +942,7 @@
         if (!data.id) {
           throw new Error('OpenRouter did not return a video job id.');
         }
+        loadCurrentUser();
         videoTitle.textContent = 'Storyboard-approved I2V job submitted';
         const critique = data.vision_critique || {};
         const confidence = typeof critique.confidence === 'number' ? ` (${Math.round(critique.confidence * 100)}% confidence)` : '';

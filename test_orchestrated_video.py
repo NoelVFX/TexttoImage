@@ -132,6 +132,49 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(history["prompt"], "a red apple")
         self.assertEqual(db["generation_history"].items[0]["result_url"], "https://example.com/apple.png")
 
+    def test_spend_credit_decrements_and_blocks_when_empty(self):
+        from AuthService import create_user, spend_credit
+
+        db = FakeDatabase()
+        user = create_user(db, email="credits@example.com", password="safe-password")
+
+        ok, updated = spend_credit(db, user_id=str(user["_id"]), credit_type="image")
+        self.assertTrue(ok)
+        self.assertEqual(updated["credits"]["image"], 24)
+
+        db["users"].update_one({"_id": user["_id"]}, {"$set": {"credits": {"image": 0, "video": 0}}})
+        ok, blocked = spend_credit(db, user_id=str(user["_id"]), credit_type="video")
+        self.assertFalse(ok)
+        self.assertEqual(blocked["credits"]["video"], 0)
+
+    def test_record_credit_purchase_adds_credits_idempotently(self):
+        from AuthService import create_user, record_credit_purchase
+
+        db = FakeDatabase()
+        user = create_user(db, email="buyer@example.com", password="safe-password")
+        first_changed, first_user = record_credit_purchase(
+            db,
+            user_id=str(user["_id"]),
+            stripe_session_id="cs_test_123",
+            plan_id="starter",
+            image_credits=250,
+            video_credits=30,
+        )
+        second_changed, second_user = record_credit_purchase(
+            db,
+            user_id=str(user["_id"]),
+            stripe_session_id="cs_test_123",
+            plan_id="starter",
+            image_credits=250,
+            video_credits=30,
+        )
+
+        self.assertTrue(first_changed)
+        self.assertFalse(second_changed)
+        self.assertEqual(first_user["credits"], {"image": 275, "video": 33})
+        self.assertEqual(second_user["credits"], {"image": 275, "video": 33})
+        self.assertEqual(len(db["credit_purchases"].items), 1)
+
     def test_record_generation_history_dedupes_same_user_media_and_url(self):
         from AuthService import record_generation_history
 
@@ -860,6 +903,17 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def tearDown(self):
         app.APP_DB = self.original_db
 
+    def login_with_credits(self, email="credits@example.com", image=25, video=3):
+        app.APP_DB = FakeDatabase()
+        response = self.client.post(
+            "/auth/register",
+            json={"email": email, "password": "safe-password", "display_name": "Credits"},
+        )
+        self.assertEqual(response.status_code, 201)
+        user_id = response.get_json()["user"]["id"]
+        app.APP_DB["users"].update_one({"_id": user_id}, {"$set": {"credits": {"image": image, "video": video}}})
+        return user_id
+
     def test_get_generate_renders_index_instead_of_html_method_error(self):
         response = self.client.get("/generate")
 
@@ -922,6 +976,18 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.get_json()["items"]), 1)
 
+    def test_image_generation_spends_credit_and_blocks_when_empty(self):
+        user_id = self.login_with_credits("image-credit@example.com", image=1, video=3)
+
+        first = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
+        second = self.client.post("/generate", data={"prompt": "a red house", "aspect_ratio": "1024x1024"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 402)
+        user = app.APP_DB["users"].find_one({"_id": user_id})
+        self.assertEqual(user["credits"]["image"], 0)
+        self.assertIn(b"Not enough image credits", second.data)
+
     def test_auth_routes_return_503_when_database_not_configured(self):
         app.APP_DB = None
 
@@ -931,6 +997,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn("database", response.get_json()["error"].lower())
 
     def test_generate_uses_stable_seed_so_server_side_edits_use_same_original(self):
+        self.login_with_credits("seed@example.com")
         response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
 
         self.assertEqual(response.status_code, 200)
@@ -973,6 +1040,8 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"authenticated-content", response.data)
         self.assertNotIn(b"authenticated-content hidden", response.data)
+        self.assertIn(b"Image credits", response.data)
+        self.assertIn(b"Video credits", response.data)
 
     def test_login_route_renders_login_panel(self):
         response = self.client.get("/login")
@@ -1035,6 +1104,75 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["plan"]["name"], "Free")
         self.assertEqual(payload["credits"]["image"], 25)
         self.assertEqual(payload["credits"]["video"], 3)
+
+    @patch("app.create_stripe_checkout_session")
+    def test_billing_checkout_creates_stripe_session_for_paid_plan(self, mock_checkout):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "checkout@example.com", "password": "safe-password", "display_name": "Checkout"},
+        )
+        mock_checkout.return_value = Mock(id="cs_test_123", url="https://checkout.stripe.com/c/pay/cs_test_123")
+
+        response = self.client.post("/billing/checkout/starter")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["session_id"], "cs_test_123")
+        self.assertIn("checkout.stripe.com", payload["checkout_url"])
+        plan_arg, user_arg = mock_checkout.call_args.args
+        self.assertEqual(plan_arg["id"], "starter")
+        self.assertEqual(user_arg["email"], "checkout@example.com")
+
+    def test_billing_checkout_reports_missing_stripe_configuration(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "missing-stripe@example.com", "password": "safe-password", "display_name": "Missing Stripe"},
+        )
+
+        with patch.dict(os.environ, {"STRIPE_SECRET_KEY": ""}, clear=False):
+            response = self.client.post("/billing/checkout/starter")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("STRIPE_SECRET_KEY", response.get_json()["error"])
+
+    @patch("app.stripe.Webhook.construct_event")
+    def test_stripe_webhook_adds_plan_credits_once(self, mock_construct_event):
+        app.APP_DB = FakeDatabase()
+        register = self.client.post(
+            "/auth/register",
+            json={"email": "webhook@example.com", "password": "safe-password", "display_name": "Webhook"},
+        )
+        user_id = register.get_json()["user"]["id"]
+        self.client.post("/auth/logout")
+        payload = {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_webhook_123",
+                    "payment_status": "paid",
+                    "metadata": {
+                        "user_id": user_id,
+                        "plan_id": "starter",
+                        "image_credits": "250",
+                        "video_credits": "30",
+                    },
+                }
+            },
+        }
+        mock_construct_event.return_value = payload
+
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_test"}, clear=False):
+            first = self.client.post("/stripe/webhook", data=json.dumps(payload), content_type="application/json")
+            second = self.client.post("/stripe/webhook", data=json.dumps(payload), content_type="application/json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        user = app.APP_DB["users"].find_one({"_id": user_id})
+        self.assertEqual(user["plan_id"], "starter")
+        self.assertEqual(user["credits"], {"image": 275, "video": 33})
+        self.assertEqual(len(app.APP_DB["credit_purchases"].items), 1)
 
     def test_google_login_redirects_to_google_oauth_when_configured(self):
         app.APP_DB = FakeDatabase()
@@ -1113,6 +1251,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(me.get_json()["user"]["email"], "google@example.com")
 
     def test_generated_image_result_includes_masked_edit_controls(self):
+        self.login_with_credits("masked-controls@example.com")
         response = self.client.post("/generate", data={"prompt": "a blue house", "aspect_ratio": "1024x1024"})
 
         self.assertEqual(response.status_code, 200)
@@ -1136,6 +1275,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
 
     @patch("app.start_image_edit_job")
     def test_image_edit_region_endpoint_returns_async_job_before_long_provider_call(self, mock_start):
+        self.login_with_credits("edit-async@example.com")
         mock_start.return_value = "job_test_123"
 
         response = self.client.post(
@@ -1224,6 +1364,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     @patch("app.build_masked_region_edit")
     @patch("app.materialize_openai_image_edit")
     def test_image_edit_region_endpoint_uses_openai_inpainting_by_default(self, mock_openai, mock_edit):
+        self.login_with_credits("edit-openai@example.com")
         mock_openai.return_value = {
             "edited_image_url": "https://app.test/static/generated/openai-inpaint-123.png",
             "inpaint_prompt": "replace the apple with an orange",
@@ -1251,6 +1392,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     @patch("app.build_masked_region_edit")
     @patch("app.materialize_flux_inpaint_edit")
     def test_image_edit_region_endpoint_uses_flux_inpainting_when_configured(self, mock_flux, mock_edit):
+        self.login_with_credits("edit-flux@example.com")
         mock_flux.return_value = {
             "edited_image_url": "https://app.test/static/generated/flux-inpaint-123.png",
             "original_image_url": "https://app.test/static/generated/inpaint-source-123.png",
@@ -1282,6 +1424,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     @patch("app.materialize_openai_image_edit")
     @patch("app.materialize_color_recolor_edit")
     def test_image_edit_region_endpoint_uses_openai_for_color_changes(self, mock_recolor, mock_openai, mock_edit):
+        self.login_with_credits("edit-color@example.com")
         mock_openai.return_value = {
             "edited_image_url": "https://app.test/static/generated/openai-color-123.png",
             "inpaint_prompt": "change only the selected apple color to green",
@@ -1402,6 +1545,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def test_start_video_generation_uses_approved_storyboard_start_frame_without_regenerating(
         self, mock_orchestrate, mock_submit
     ):
+        self.login_with_credits("video-story@example.com", video=3)
         mock_submit.return_value = {"id": "job_story", "polling_url": "https://openrouter.ai/jobs/job_story", "status": "pending"}
 
         response = self.client.post(
@@ -1449,6 +1593,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def test_start_video_generation_does_not_submit_paid_i2v_when_vision_rejects(
         self, mock_orchestrate, mock_submit
     ):
+        self.login_with_credits("video-reject@example.com", video=3)
         from OrchestratedVideo import VideoOrchestrationError
 
         mock_orchestrate.side_effect = VideoOrchestrationError(
@@ -1466,6 +1611,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
 
     @patch("app.orchestrate_video_first_frame")
     def test_start_video_generation_returns_json_when_orchestrator_crashes(self, mock_orchestrate):
+        self.login_with_credits("video-crash@example.com", video=3)
         mock_orchestrate.side_effect = RuntimeError("Pollinations timeout returned an HTML gateway page")
 
         response = self.client.post(
@@ -1521,6 +1667,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def test_start_video_generation_submits_paid_i2v_only_after_approved_frame(
         self, mock_orchestrate, mock_submit
     ):
+        self.login_with_credits("video-approved@example.com", video=3)
         from OrchestratedVideo import FirstFrameResult, VisionCritique
 
         critique = VisionCritique(
@@ -1566,6 +1713,7 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
     def test_start_video_generation_can_request_generated_audio(
         self, mock_orchestrate, mock_submit
     ):
+        self.login_with_credits("video-audio@example.com", video=3)
         from OrchestratedVideo import FirstFrameResult, VisionCritique
 
         critique = VisionCritique(
