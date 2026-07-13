@@ -31,6 +31,7 @@ from AuthService import (
     record_subscription_credit_refresh,
     serialize_user,
     spend_credit,
+    update_user_billing,
     upsert_google_user,
 )
 from Database import get_database
@@ -86,6 +87,8 @@ if APP_DB is not None:
 IMAGE_EDIT_JOBS: dict[str, dict] = {}
 IMAGE_EDIT_JOBS_LOCK = threading.Lock()
 IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
+VIDEO_GENERATION_JOBS: dict[str, dict] = {}
+VIDEO_GENERATION_JOBS_LOCK = threading.Lock()
 
 VIDEO_START_FRAME_SIZES = {
     "16:9": (1280, 720),
@@ -593,6 +596,35 @@ def billing_checkout(plan_id: str):
     return jsonify({"checkout_url": checkout_session.url, "session_id": checkout_session.id})
 
 
+@app.post("/billing/cancel")
+def billing_cancel():
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Not logged in."}), 401
+    subscription_id = (user.get("stripe_subscription_id") or "").strip()
+    if not subscription_id:
+        return jsonify({"error": "No active subscription to cancel."}), 400
+    if stripe is None:
+        return jsonify({"error": "Stripe SDK is not installed."}), 503
+    if not stripe_secret_key():
+        return jsonify({"error": "Set STRIPE_SECRET_KEY to enable subscription cancellation."}), 503
+    try:
+        stripe.api_key = stripe_secret_key()
+        subscription = stripe.Subscription.modify(subscription_id, cancel_at_period_end=True)
+        update_user_billing(current_db(), user, subscription_status="cancel_at_period_end")
+    except Exception as exc:
+        app.logger.exception("Stripe subscription cancellation failed")
+        return jsonify({"error": str(exc)}), 503
+    return jsonify(
+        {
+            "ok": True,
+            "subscription_id": subscription_id,
+            "cancel_at_period_end": bool(subscription.get("cancel_at_period_end", True)),
+            "status": subscription.get("status", "active"),
+        }
+    )
+
+
 @app.get("/billing/success")
 def billing_success():
     session_id = (request.args.get("session_id") or "").strip()
@@ -798,6 +830,41 @@ def require_and_spend_credit(credit_type: str):
             402,
         )
     return user, None
+
+
+def remember_video_job(job_id: str, metadata: dict) -> None:
+    with VIDEO_GENERATION_JOBS_LOCK:
+        VIDEO_GENERATION_JOBS[job_id] = {**metadata, "recorded": False, "created_at": time.time()}
+
+
+def record_completed_video_history(job_id: str, video_url: str | None) -> None:
+    if not video_url:
+        return
+    with VIDEO_GENERATION_JOBS_LOCK:
+        job_meta = VIDEO_GENERATION_JOBS.get(job_id)
+        if not job_meta or job_meta.get("recorded"):
+            return
+        VIDEO_GENERATION_JOBS[job_id]["recorded"] = True
+    db = current_db()
+    if db is None or not job_meta.get("user_id"):
+        return
+    try:
+        record_generation_history(
+            db,
+            user_id=job_meta["user_id"],
+            media_type="video",
+            prompt=job_meta.get("prompt") or "Generated video",
+            result_url=video_url,
+            metadata={
+                "optimized_prompt": job_meta.get("optimized_prompt"),
+                "aspect_ratio": job_meta.get("aspect_ratio"),
+                "model": job_meta.get("model"),
+                "provider": "openrouter",
+                "job_id": job_id,
+            },
+        )
+    except Exception:
+        app.logger.exception("Failed to record video generation history")
 
 
 def record_masked_edit_history(*, user_id: str | None, edit_payload: dict, context_prompt: str | None = None) -> None:
@@ -1163,6 +1230,7 @@ def start_video_generation():
     _user, credit_error = require_and_spend_credit("video")
     if credit_error:
         return credit_error
+    user_id = str(_user.get("_id")) if _user else current_user_id()
 
     frame_width, frame_height = VIDEO_START_FRAME_SIZES[selected_ratio]
     storyboard_start_frame_url = (payload.get("storyboard_start_frame_url") or payload.get("start_frame_url") or "").strip()
@@ -1230,9 +1298,22 @@ def start_video_generation():
             }
         ), 500
 
+    job_id_for_response = job.get("id")
+    if job_id_for_response:
+        remember_video_job(
+            str(job_id_for_response),
+            {
+                "user_id": user_id,
+                "prompt": prompt,
+                "optimized_prompt": first_frame.optimized_prompt,
+                "aspect_ratio": selected_ratio,
+                "model": OPENROUTER_VIDEO_MODEL,
+            },
+        )
+
     return jsonify(
         {
-            "id": job.get("id"),
+            "id": job_id_for_response,
             "polling_url": job.get("polling_url"),
             "status": job.get("status", "pending"),
             "model": OPENROUTER_VIDEO_MODEL,
@@ -1269,6 +1350,8 @@ def video_generation_status(job_id: str):
         not video_url or video_url.startswith("https://openrouter.ai/api/") or video_url.startswith("/api/")
     ):
         video_url = url_for("video_content", job_id=job_id_for_response)
+    if status == "completed":
+        record_completed_video_history(str(job_id_for_response), video_url)
     return jsonify(
         {
             "id": job_id_for_response,

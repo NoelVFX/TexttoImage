@@ -14,7 +14,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
 - Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
 - User auth API backed by MongoDB: register, login, logout, current user, and per-user generation history
-- Billing/credits page for logged-in users showing the current plan, image/video credit balances, and Stripe Checkout subscription plan cards. Checkout stores the user's card, charges monthly on the checkout day, and successful invoices refresh the user's credits.
+- Billing/credits page for logged-in users showing the current plan, image/video credit balances, and Stripe Checkout subscription plan cards. Checkout stores the user's card, charges monthly on the checkout day, successful invoices refresh the user's credits, and users can cancel renewal at period end.
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips
@@ -99,6 +99,7 @@ Billing/credits:
 - Video generation spends 1 video credit when `/video/start` is submitted.
 - `/billing` shows current credits and paid monthly subscription plans.
 - Paid plan buttons create Stripe-hosted subscription Checkout Sessions via `/billing/checkout/<plan_id>`.
+- Users can cancel from `/billing`; the app calls Stripe with `cancel_at_period_end=true`, so the current billing period remains active and Stripe stops charging on the next renewal.
 - Checkout stores the user's payment method and Stripe automatically charges the subscription monthly on the date the user first pays.
 - Configure Stripe webhook `checkout.session.completed` and `invoice.paid` to `https://<your-domain>/stripe/webhook`.
 - `checkout.session.completed` activates the plan and sets the first monthly credit allowance. Later `invoice.paid` events refresh credits to that plan's monthly allowance. Both paths are idempotent by event/session/invoice ID.

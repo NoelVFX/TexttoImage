@@ -877,6 +877,7 @@
           prompt,
           createdAt: Date.now()
         });
+        loadAccountHistory();
         videoButton.disabled = false;
         videoButton.textContent = 'Generate video';
         return;

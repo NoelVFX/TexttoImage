@@ -1141,6 +1141,41 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["credits"]["image"], 25)
         self.assertEqual(payload["credits"]["video"], 3)
 
+    @patch("app.stripe.Subscription.modify")
+    def test_billing_cancel_marks_subscription_cancel_at_period_end(self, mock_modify):
+        app.APP_DB = FakeDatabase()
+        register = self.client.post(
+            "/auth/register",
+            json={"email": "cancel@example.com", "password": "safe-password", "display_name": "Cancel"},
+        )
+        user_id = register.get_json()["user"]["id"]
+        app.APP_DB["users"].update_one(
+            {"_id": user_id},
+            {"$set": {"stripe_subscription_id": "sub_cancel_123", "subscription_status": "active"}},
+        )
+        mock_modify.return_value = {"id": "sub_cancel_123", "cancel_at_period_end": True, "status": "active"}
+
+        with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}, clear=False):
+            response = self.client.post("/billing/cancel")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["cancel_at_period_end"])
+        mock_modify.assert_called_once_with("sub_cancel_123", cancel_at_period_end=True)
+        user = app.APP_DB["users"].find_one({"_id": user_id})
+        self.assertEqual(user["subscription_status"], "cancel_at_period_end")
+
+    def test_billing_cancel_requires_active_subscription(self):
+        app.APP_DB = FakeDatabase()
+        self.client.post(
+            "/auth/register",
+            json={"email": "no-sub@example.com", "password": "safe-password", "display_name": "No Sub"},
+        )
+
+        response = self.client.post("/billing/cancel")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("active subscription", response.get_json()["error"])
+
     @patch("app.create_stripe_checkout_session")
     def test_billing_checkout_creates_stripe_session_for_paid_plan(self, mock_checkout):
         app.APP_DB = FakeDatabase()
@@ -1742,6 +1777,34 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["video_url"], "/video/content/job_123")
+
+    @patch("app.get_video_status")
+    def test_completed_video_status_records_video_generation_history(self, mock_status):
+        user_id = self.login_with_credits("video-history@example.com", video=3)
+        app.VIDEO_GENERATION_JOBS["job_history"] = {
+            "user_id": user_id,
+            "prompt": "a dancing robot",
+            "optimized_prompt": "cinematic dancing robot",
+            "aspect_ratio": "16:9",
+            "model": "alibaba/wan-2.6",
+        }
+        mock_status.return_value = {
+            "id": "job_history",
+            "status": "completed",
+            "video_url": "https://cdn.example.com/video.mp4",
+        }
+
+        response = self.client.get("/video/status/job_history")
+
+        self.assertEqual(response.status_code, 200)
+        history = self.client.get("/auth/history")
+        self.assertEqual(history.status_code, 200)
+        items = history.get_json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["media_type"], "video")
+        self.assertEqual(items[0]["prompt"], "a dancing robot")
+        self.assertEqual(items[0]["result_url"], "/video/content/job_history")
+        self.assertEqual(items[0]["metadata"]["model"], "alibaba/wan-2.6")
 
     @patch("app.get_video_content")
     def test_video_content_proxies_openrouter_bytes_with_video_content_type(self, mock_content):
