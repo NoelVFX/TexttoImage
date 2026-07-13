@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlparse, urlencode
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session, redirect
@@ -158,13 +158,40 @@ STORYBOARD_IMAGE_EXTENSIONS = {
     "image/webp": ".webp",
 }
 
+GENERATED_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
 
 def stable_generation_seed(prompt: str, aspect_ratio: str) -> int:
     digest = hashlib.sha256(f"{aspect_ratio}|{prompt.strip()}".encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
 
+def local_generated_file_from_url(image_url: str) -> Path | None:
+    parsed = urlparse(image_url)
+    path = unquote(parsed.path if parsed.scheme else image_url)
+    prefix = "/static/generated/"
+    if not path.startswith(prefix):
+        return None
+    filename = Path(path.removeprefix(prefix)).name
+    if not filename:
+        return None
+    candidate = (GENERATED_DIR / filename).resolve()
+    if GENERATED_DIR.resolve() not in candidate.parents and candidate != GENERATED_DIR.resolve():
+        return None
+    return candidate
+
+
 def download_image_bytes(image_url: str, *, timeout: int = 45) -> tuple[bytes, str]:
+    local_path = local_generated_file_from_url(image_url)
+    if local_path is not None:
+        if not local_path.exists():
+            raise ImageEditError(f"Generated image file not found: {local_path.name}")
+        return local_path.read_bytes(), GENERATED_CONTENT_TYPES.get(local_path.suffix.lower(), "image/png")
     response = requests.get(image_url, timeout=timeout)
     content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
     if response.status_code != 200:
@@ -452,6 +479,20 @@ def stripe_checkout_enabled() -> bool:
     return bool(stripe_secret_key()) and stripe is not None
 
 
+def configure_stripe_api() -> None:
+    if stripe is None:
+        raise RuntimeError("Stripe SDK is not installed.")
+    key = stripe_secret_key()
+    if not key:
+        raise RuntimeError("Set STRIPE_SECRET_KEY to enable Stripe Checkout.")
+    stripe.api_key = key
+    try:
+        timeout = float(os.getenv("STRIPE_REQUEST_TIMEOUT", "20"))
+        stripe.default_http_client = stripe.http_client.RequestsClient(timeout=timeout)
+    except Exception:
+        app.logger.exception("Could not configure Stripe HTTP timeout")
+
+
 def stripe_success_url() -> str:
     return public_external_url("billing_success") + "?session_id={CHECKOUT_SESSION_ID}"
 
@@ -501,12 +542,7 @@ def checkout_session_payload_for_plan(plan: dict, user: dict) -> dict:
 
 
 def create_stripe_checkout_session(plan: dict, user: dict):
-    if stripe is None:
-        raise RuntimeError("Stripe SDK is not installed.")
-    key = stripe_secret_key()
-    if not key:
-        raise RuntimeError("Set STRIPE_SECRET_KEY to enable Stripe Checkout.")
-    stripe.api_key = key
+    configure_stripe_api()
     return stripe.checkout.Session.create(**checkout_session_payload_for_plan(plan, user))
 
 
@@ -609,7 +645,7 @@ def billing_cancel():
     if not stripe_secret_key():
         return jsonify({"error": "Set STRIPE_SECRET_KEY to enable subscription cancellation."}), 503
     try:
-        stripe.api_key = stripe_secret_key()
+        configure_stripe_api()
         subscription = stripe.Subscription.modify(subscription_id, cancel_at_period_end=True)
         update_user_billing(current_db(), user, subscription_status="cancel_at_period_end")
     except Exception as exc:
@@ -631,7 +667,7 @@ def billing_success():
     message = "Payment complete. Your credits will appear after Stripe confirms the checkout."
     if session_id and stripe is not None and stripe_secret_key():
         try:
-            stripe.api_key = stripe_secret_key()
+            configure_stripe_api()
             checkout_session = stripe.checkout.Session.retrieve(session_id)
             fulfill_checkout_session(dict(checkout_session))
             message = "Payment complete. Credits added to your account."

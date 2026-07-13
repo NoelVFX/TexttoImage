@@ -349,6 +349,22 @@ class MaskedImageEditTests(unittest.TestCase):
         self.assertGreater(mask_image.getpixel((20, 25)), 0)
         self.assertLess(mask_image.getpixel((20, 25)), 255)
 
+    def test_download_image_bytes_reads_app_generated_relative_urls(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        image = Image.new("RGB", (16, 16), (20, 40, 60))
+        image_io = BytesIO()
+        image.save(image_io, format="PNG")
+        generated = app.GENERATED_DIR / "relative-edit-source.png"
+        generated.write_bytes(image_io.getvalue())
+
+        content, content_type = app.download_image_bytes("/static/generated/relative-edit-source.png")
+
+        self.assertEqual(content, image_io.getvalue())
+        self.assertEqual(content_type, "image/png")
+
 
 class StoryboardGenerationTests(unittest.TestCase):
     def test_build_storyboard_frames_returns_start_middle_end_frames(self):
@@ -1124,6 +1140,8 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"Starter", response.data)
         self.assertIn(b"Creator", response.data)
         self.assertIn(b"Pro", response.data)
+        self.assertIn(b"fetchWithTimeout", response.data)
+        self.assertIn(b"parseBillingResponse", response.data)
 
     def test_billing_status_returns_current_user_plan_and_credits(self):
         app.APP_DB = FakeDatabase()

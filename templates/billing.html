@@ -84,6 +84,24 @@
   </main>
   <script>
     const billingMessage = document.getElementById('billing-message');
+    const parseBillingResponse = async (response, fallbackMessage) => {
+      const raw = await response.text();
+      try {
+        return raw ? JSON.parse(raw) : {};
+      } catch (error) {
+        const preview = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+        throw new Error(`${fallbackMessage} Server returned non-JSON response (${response.status}): ${preview || response.statusText}`);
+      }
+    };
+    const fetchWithTimeout = async (url, options = {}, timeoutMs = 30000) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
     const cancelForm = document.getElementById('cancel-subscription-form');
     const cancelMessage = document.getElementById('cancel-subscription-message');
     cancelForm?.addEventListener('submit', async (event) => {
@@ -93,8 +111,8 @@
       button.disabled = true;
       button.textContent = 'Cancelling...';
       try {
-        const response = await fetch('/billing/cancel', { method: 'POST' });
-        const data = await response.json();
+        const response = await fetchWithTimeout('/billing/cancel', { method: 'POST' });
+        const data = await parseBillingResponse(response, 'Could not cancel subscription.');
         if (!response.ok || data.error) throw new Error(data.error || 'Could not cancel subscription.');
         cancelMessage.textContent = 'Plan will cancel at the end of the current billing period.';
       } catch (error) {
@@ -110,8 +128,8 @@
         button.textContent = 'Opening Stripe...';
         billingMessage.textContent = '';
         try {
-          const response = await fetch(`/billing/checkout/${encodeURIComponent(button.dataset.planId)}`, { method: 'POST' });
-          const data = await response.json();
+          const response = await fetchWithTimeout(`/billing/checkout/${encodeURIComponent(button.dataset.planId)}`, { method: 'POST' });
+          const data = await parseBillingResponse(response, 'Could not start checkout.');
           if (!response.ok || data.error) throw new Error(data.error || 'Could not start checkout.');
           window.location.href = data.checkout_url;
         } catch (error) {

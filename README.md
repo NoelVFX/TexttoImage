@@ -61,6 +61,7 @@ Optional variables:
 - `STRIPE_WEBHOOK_SECRET` - Stripe webhook signing secret for `/stripe/webhook`; Stripe should send `checkout.session.completed` and `invoice.paid` events here
 - `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO` - optional recurring monthly Stripe Price IDs for each credit plan. If omitted, the app uses inline recurring Checkout `price_data` amounts.
 - `STRIPE_TRANSFER_DESTINATION_ACCOUNT` - optional Stripe Connect connected account ID (`acct_...`) used as `subscription_data.transfer_data.destination` so subscription payments are destination charges to that account. Stripe cannot transfer directly to an arbitrary card; connect a bank/card payout destination in that connected Stripe account.
+- `STRIPE_REQUEST_TIMEOUT` - seconds to wait for Stripe API calls such as subscription cancellation; defaults to `20`
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
