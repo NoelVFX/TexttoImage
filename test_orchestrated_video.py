@@ -404,6 +404,37 @@ class StoryboardGenerationTests(unittest.TestCase):
         self.assertIn("width=720", frame.url)
         self.assertIn("height=1280", frame.url)
 
+    @patch("app.requests.get")
+    def test_materialize_storyboard_frame_retries_pollinations_queue_response(self, mock_get):
+        from Storyboard import StoryboardFrame
+
+        class FakeResponse:
+            def __init__(self, status_code, content_type, body):
+                self.status_code = status_code
+                self.headers = {"content-type": content_type}
+                self.content = body if isinstance(body, bytes) else body.encode("utf-8")
+                self.text = body if isinstance(body, str) else body.decode("utf-8", errors="ignore")
+
+        mock_get.side_effect = [
+            FakeResponse(503, "text/html", "request queued; visit auth.pollinations.ai"),
+            FakeResponse(200, "image/png", b"storyboard image bytes"),
+        ]
+        frame = StoryboardFrame(
+            stage="start",
+            label="Start",
+            prompt="opening frame",
+            url="https://image.pollinations.ai/p/opening?model=flux",
+            seed=123,
+        )
+
+        url = app.materialize_storyboard_frame(frame, timeout=1, attempts=2)
+
+        self.assertIn("/static/generated/storyboard-start-", url)
+        saved_path = app.local_generated_file_from_url(url)
+        self.assertIsNotNone(saved_path)
+        self.assertEqual(saved_path.read_bytes(), b"storyboard image bytes")
+        self.assertEqual(mock_get.call_count, 2)
+
 
 
 class OpenAIImageEditTests(unittest.TestCase):
@@ -1631,6 +1662,13 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertIn(b"videoEl.removeAttribute('src')", response.data)
         self.assertIn(b"videoDownload.classList.add('hidden')", response.data)
 
+    def test_index_titles_video_generator_without_wan_version(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Generate a video", response.data)
+        self.assertNotIn(b"Generate a Wan 2.6 video", response.data)
+
     @patch("app.materialize_storyboard_frame")
     @patch("app.build_storyboard_frames")
     def test_video_storyboard_endpoint_returns_three_app_served_frames_before_i2v(self, mock_build, mock_materialize):
@@ -1658,6 +1696,30 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         mock_build.assert_called_once()
 
     @patch("app.materialize_storyboard_frame")
+    @patch("app.build_storyboard_frames")
+    def test_video_storyboard_endpoint_returns_json_and_source_urls_when_materialize_fails(self, mock_build, mock_materialize):
+        from Storyboard import StoryboardFrame
+
+        mock_build.return_value = [
+            StoryboardFrame(stage="start", label="Start", prompt="opening frame", url="https://img/start", seed=1),
+            StoryboardFrame(stage="middle", label="Middle", prompt="midpoint frame", url="https://img/middle", seed=2),
+            StoryboardFrame(stage="end", label="End", prompt="ending frame", url="https://img/end", seed=3),
+        ]
+        mock_materialize.side_effect = RuntimeError("Storyboard image download returned non-image content (text/html): queued")
+
+        response = self.client.post(
+            "/video/storyboard",
+            json={"prompt": "monkey with colorful eggs", "aspect_ratio": "16:9"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        payload = response.get_json()
+        self.assertEqual(payload["frames"][0]["url"], "https://img/start")
+        self.assertEqual(payload["frames"][0]["source_url"], "https://img/start")
+        self.assertIn("materialization_error", payload["frames"][0])
+
+    @patch("app.materialize_storyboard_frame")
     @patch("app.regenerate_storyboard_frame")
     def test_video_storyboard_frame_endpoint_regenerates_one_app_served_frame(self, mock_regenerate, mock_materialize):
         from Storyboard import StoryboardFrame
@@ -1683,6 +1745,32 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(payload["frame"]["source_url"], "https://img/middle-new")
         mock_materialize.assert_called_once()
         mock_regenerate.assert_called_once()
+
+    @patch("app.materialize_storyboard_frame")
+    @patch("app.regenerate_storyboard_frame")
+    def test_video_storyboard_frame_endpoint_returns_json_and_source_url_when_materialize_fails(self, mock_regenerate, mock_materialize):
+        from Storyboard import StoryboardFrame
+
+        mock_regenerate.return_value = StoryboardFrame(
+            stage="middle",
+            label="Middle",
+            prompt="monkey jumps higher",
+            url="https://img/middle-new",
+            seed=9,
+        )
+        mock_materialize.side_effect = RuntimeError("Storyboard image download returned HTTP 503: queued")
+
+        response = self.client.post(
+            "/video/storyboard/frame",
+            json={"prompt": "monkey jumps higher", "stage": "middle", "aspect_ratio": "16:9"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        payload = response.get_json()
+        self.assertEqual(payload["frame"]["url"], "https://img/middle-new")
+        self.assertEqual(payload["frame"]["source_url"], "https://img/middle-new")
+        self.assertIn("materialization_error", payload["frame"])
 
     @patch("app.submit_video_job")
     @patch("app.orchestrate_video_first_frame")

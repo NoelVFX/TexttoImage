@@ -61,7 +61,7 @@ from OpenRouterVideo import (
 from OrchestratedVideo import FirstFrameResult, VideoOrchestrationError, VisionCritique, orchestrate_video_first_frame
 from PromptRewrite import PromptRewriteError, rewrite_prompt
 from Storyboard import build_storyboard_frames, regenerate_storyboard_frame
-from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url
+from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url, _is_pollinations_queue_or_rate_limit
 
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
@@ -316,32 +316,57 @@ def public_generated_url(filename: str) -> str:
     return url_for("static", filename=f"generated/{filename}", _external=True)
 
 
-def materialize_storyboard_frame(frame, *, timeout: int = 30) -> str:
+def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts: int | None = None) -> str:
     """Download a Pollinations storyboard frame and expose it as a stable app-served image URL.
 
     Some I2V providers reject dynamic image-generator URLs with errors like
     "failed to process the file". Serving a normal static image file from the
     app gives OpenRouter/Wan a direct, stable image URL to fetch.
-    """
-    response = requests.get(frame.url, timeout=timeout)
-    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
-    if response.status_code != 200:
-        raise RuntimeError(f"Storyboard image download returned HTTP {response.status_code}: {response.text[:200]}")
-    if not content_type.startswith("image/"):
-        raise RuntimeError(f"Storyboard image download returned non-image content ({content_type}): {response.text[:200]}")
 
-    suffix = STORYBOARD_IMAGE_EXTENSIONS.get(content_type, ".jpg")
-    digest = hashlib.sha256(f"{frame.stage}|{frame.seed}|{frame.url}".encode("utf-8")).hexdigest()[:16]
-    filename = f"storyboard-{frame.stage}-{digest}{suffix}"
-    output_path = GENERATED_DIR / filename
-    output_path.write_bytes(response.content)
-    return public_generated_url(filename)
+    Pollinations can briefly return queue/rate-limit text on the first fetch of
+    a generated URL. Retry those transient responses before giving up so the
+    first storyboard click is less likely to surface a provider warm-up page.
+    """
+    timeout = timeout if timeout is not None else int(os.getenv("STORYBOARD_MATERIALIZE_TIMEOUT", "12"))
+    attempts = attempts if attempts is not None else int(os.getenv("STORYBOARD_MATERIALIZE_ATTEMPTS", "2"))
+    last_error = "Pollinations did not return a usable storyboard image."
+    for _attempt in range(max(1, attempts)):
+        try:
+            response = requests.get(frame.url, timeout=timeout)
+        except requests.RequestException as exc:
+            last_error = f"Storyboard image download failed: {exc}"
+            continue
+        content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+        body_preview = response.text[:300] if response.status_code != 200 or not content_type.startswith("image/") else ""
+        if response.status_code == 200 and content_type.startswith("image/"):
+            suffix = STORYBOARD_IMAGE_EXTENSIONS.get(content_type, ".jpg")
+            digest = hashlib.sha256(f"{frame.stage}|{frame.seed}|{frame.url}".encode("utf-8")).hexdigest()[:16]
+            filename = f"storyboard-{frame.stage}-{digest}{suffix}"
+            output_path = GENERATED_DIR / filename
+            output_path.write_bytes(response.content)
+            return public_generated_url(filename)
+        if response.status_code != 200:
+            last_error = f"Storyboard image download returned HTTP {response.status_code}: {body_preview}"
+        else:
+            last_error = f"Storyboard image download returned non-image content ({content_type}): {body_preview}"
+        if not _is_pollinations_queue_or_rate_limit(response.status_code, content_type, body_preview):
+            break
+    raise RuntimeError(last_error)
 
 
 def storyboard_frame_payload(frame) -> dict:
     payload = frame.to_dict()
     payload["source_url"] = frame.url
-    payload["url"] = materialize_storyboard_frame(frame)
+    try:
+        payload["url"] = materialize_storyboard_frame(frame)
+    except Exception as exc:
+        app.logger.warning(
+            "Could not materialize storyboard frame %s; falling back to source URL: %s",
+            frame.stage,
+            exc,
+        )
+        payload["url"] = frame.url
+        payload["materialization_error"] = str(exc)
     return payload
 
 
