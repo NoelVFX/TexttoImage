@@ -27,8 +27,8 @@ from AuthService import (
     get_user_by_id,
     list_generation_history,
     plan_payload,
-    record_credit_purchase,
     record_generation_history,
+    record_subscription_credit_refresh,
     serialize_user,
     spend_credit,
     upsert_google_user,
@@ -441,6 +441,10 @@ def stripe_webhook_secret() -> str:
     return (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 
 
+def stripe_transfer_destination_account() -> str:
+    return (os.getenv("STRIPE_TRANSFER_DESTINATION_ACCOUNT") or "").strip()
+
+
 def stripe_checkout_enabled() -> bool:
     return bool(stripe_secret_key()) and stripe is not None
 
@@ -471,18 +475,24 @@ def checkout_session_payload_for_plan(plan: dict, user: dict) -> dict:
         line_item["price_data"] = {
             "currency": "usd",
             "unit_amount": amount,
+            "recurring": {"interval": "month"},
             "product_data": {
-                "name": f"{plan['name']} credits",
-                "description": f"{plan['image_credits']} image credits and {plan['video_credits']} video credits",
+                "name": f"{plan['name']} monthly credits",
+                "description": f"Monthly refresh: {plan['image_credits']} image credits and {plan['video_credits']} video credits",
             },
         }
+    subscription_data = {"metadata": metadata}
+    destination = stripe_transfer_destination_account()
+    if destination:
+        subscription_data["transfer_data"] = {"destination": destination}
     return {
-        "mode": "payment",
+        "mode": "subscription",
         "customer_email": user.get("email"),
         "line_items": [line_item],
         "success_url": stripe_success_url(),
         "cancel_url": stripe_cancel_url(),
         "metadata": metadata,
+        "subscription_data": subscription_data,
         "client_reference_id": str(user.get("_id")),
     }
 
@@ -505,13 +515,37 @@ def fulfill_checkout_session(checkout_session: dict) -> dict:
     paid = checkout_session.get("payment_status") in {"paid", "no_payment_required"}
     if not paid:
         raise RuntimeError("Checkout session is not paid yet.")
-    changed, user = record_credit_purchase(
+    changed, user = record_subscription_credit_refresh(
         db,
         user_id=metadata.get("user_id", ""),
-        stripe_session_id=checkout_session.get("id", ""),
+        event_id=f"checkout:{checkout_session.get('id', '')}",
         plan_id=metadata.get("plan_id", "free"),
         image_credits=int(metadata.get("image_credits") or 0),
         video_credits=int(metadata.get("video_credits") or 0),
+        stripe_customer_id=checkout_session.get("customer"),
+        stripe_subscription_id=checkout_session.get("subscription"),
+        subscription_status="active",
+    )
+    return {"credited": changed, "user": serialize_user(user) if user else None}
+
+
+def fulfill_paid_invoice(invoice: dict) -> dict:
+    if invoice.get("billing_reason") == "subscription_create":
+        return {"credited": False, "skipped": "subscription_create"}
+    metadata = invoice.get("subscription_details", {}).get("metadata") or invoice.get("metadata") or {}
+    db = current_db()
+    if db is None:
+        raise RuntimeError("MongoDB database is not configured.")
+    changed, user = record_subscription_credit_refresh(
+        db,
+        user_id=metadata.get("user_id", ""),
+        event_id=f"invoice:{invoice.get('id', '')}",
+        plan_id=metadata.get("plan_id", "free"),
+        image_credits=int(metadata.get("image_credits") or 0),
+        video_credits=int(metadata.get("video_credits") or 0),
+        stripe_customer_id=invoice.get("customer"),
+        stripe_subscription_id=invoice.get("subscription"),
+        subscription_status="active",
     )
     return {"credited": changed, "user": serialize_user(user) if user else None}
 
@@ -590,6 +624,8 @@ def stripe_webhook():
 
     if event.get("type") == "checkout.session.completed":
         fulfill_checkout_session(event["data"]["object"])
+    elif event.get("type") == "invoice.paid":
+        fulfill_paid_invoice(event["data"]["object"])
     return jsonify({"received": True})
 
 

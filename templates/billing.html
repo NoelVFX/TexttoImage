@@ -21,7 +21,7 @@
       <div class="section-heading">
         <p class="eyebrow">Current plan</p>
         <h2>{{ plan.name }}</h2>
-        <p class="section-copy">Signed in as {{ user.display_name or user.email }}. Purchases use Stripe-hosted Checkout. Credits are added after Stripe confirms payment.</p>
+        <p class="section-copy">Signed in as {{ user.display_name or user.email }}. Purchases use Stripe-hosted Checkout subscriptions. Your card is charged monthly on the checkout date and credits refresh on each successful invoice.</p>
       </div>
       <section class="billing-summary-grid">
         <article class="card billing-summary-card">

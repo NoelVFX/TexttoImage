@@ -175,6 +175,42 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(second_user["credits"], {"image": 275, "video": 33})
         self.assertEqual(len(db["credit_purchases"].items), 1)
 
+    def test_record_subscription_credit_refresh_resets_allowance_idempotently(self):
+        from AuthService import create_user, record_subscription_credit_refresh, spend_credit
+
+        db = FakeDatabase()
+        user = create_user(db, email="subscriber@example.com", password="safe-password")
+        spend_credit(db, user_id=str(user["_id"]), credit_type="image")
+        first_changed, first_user = record_subscription_credit_refresh(
+            db,
+            user_id=str(user["_id"]),
+            event_id="invoice:in_123",
+            plan_id="creator",
+            image_credits=1200,
+            video_credits=150,
+            stripe_customer_id="cus_123",
+            stripe_subscription_id="sub_123",
+            subscription_status="active",
+        )
+        second_changed, second_user = record_subscription_credit_refresh(
+            db,
+            user_id=str(user["_id"]),
+            event_id="invoice:in_123",
+            plan_id="creator",
+            image_credits=1200,
+            video_credits=150,
+            stripe_customer_id="cus_123",
+            stripe_subscription_id="sub_123",
+            subscription_status="active",
+        )
+
+        self.assertTrue(first_changed)
+        self.assertFalse(second_changed)
+        self.assertEqual(first_user["plan_id"], "creator")
+        self.assertEqual(first_user["credits"], {"image": 1200, "video": 150})
+        self.assertEqual(second_user["credits"], {"image": 1200, "video": 150})
+        self.assertEqual(len(db["credit_refreshes"].items), 1)
+
     def test_record_generation_history_dedupes_same_user_media_and_url(self):
         from AuthService import record_generation_history
 
@@ -1171,8 +1207,63 @@ class VideoOrchestrationRouteTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         user = app.APP_DB["users"].find_one({"_id": user_id})
         self.assertEqual(user["plan_id"], "starter")
-        self.assertEqual(user["credits"], {"image": 275, "video": 33})
-        self.assertEqual(len(app.APP_DB["credit_purchases"].items), 1)
+        self.assertEqual(user["credits"], {"image": 250, "video": 30})
+        self.assertEqual(len(app.APP_DB["credit_refreshes"].items), 1)
+
+    @patch("app.stripe.Webhook.construct_event")
+    def test_stripe_invoice_paid_refreshes_subscription_credits_monthly(self, mock_construct_event):
+        app.APP_DB = FakeDatabase()
+        register = self.client.post(
+            "/auth/register",
+            json={"email": "renewal@example.com", "password": "safe-password", "display_name": "Renewal"},
+        )
+        user_id = register.get_json()["user"]["id"]
+        app.APP_DB["users"].update_one({"_id": user_id}, {"$set": {"credits": {"image": 2, "video": 0}}})
+        payload = {
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_renewal_123",
+                    "billing_reason": "subscription_cycle",
+                    "customer": "cus_123",
+                    "subscription": "sub_123",
+                    "subscription_details": {
+                        "metadata": {
+                            "user_id": user_id,
+                            "plan_id": "creator",
+                            "image_credits": "1200",
+                            "video_credits": "150",
+                        }
+                    },
+                }
+            },
+        }
+        mock_construct_event.return_value = payload
+
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_test"}, clear=False):
+            first = self.client.post("/stripe/webhook", data=json.dumps(payload), content_type="application/json")
+            second = self.client.post("/stripe/webhook", data=json.dumps(payload), content_type="application/json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        user = app.APP_DB["users"].find_one({"_id": user_id})
+        self.assertEqual(user["plan_id"], "creator")
+        self.assertEqual(user["credits"], {"image": 1200, "video": 150})
+        self.assertEqual(user["stripe_subscription_id"], "sub_123")
+        self.assertEqual(len(app.APP_DB["credit_refreshes"].items), 1)
+
+    def test_subscription_checkout_payload_uses_recurring_monthly_and_optional_destination(self):
+        user = {"_id": "user_123", "email": "buyer@example.com"}
+        plan = app.plan_by_id("starter")
+        with app.app.test_request_context("/billing", base_url="https://app.test"), patch.dict(
+            os.environ, {"STRIPE_TRANSFER_DESTINATION_ACCOUNT": "acct_123"}, clear=False
+        ):
+            payload = app.checkout_session_payload_for_plan(plan, user)
+
+        self.assertEqual(payload["mode"], "subscription")
+        self.assertEqual(payload["line_items"][0]["price_data"]["recurring"]["interval"], "month")
+        self.assertEqual(payload["subscription_data"]["metadata"]["user_id"], "user_123")
+        self.assertEqual(payload["subscription_data"]["transfer_data"]["destination"], "acct_123")
 
     def test_google_login_redirects_to_google_oauth_when_configured(self):
         app.APP_DB = FakeDatabase()

@@ -39,6 +39,7 @@ def ensure_auth_indexes(db) -> None:
     db["generation_history"].create_index("user_id")
     db["generation_history"].create_index("created_at")
     db["credit_purchases"].create_index("stripe_session_id", unique=True)
+    db["credit_refreshes"].create_index("event_id", unique=True)
 
 
 def serialize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -50,6 +51,8 @@ def serialize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
         "display_name": user.get("display_name") or user.get("email"),
         "plan": plan_payload(user.get("plan_id")),
         "credits": credits_payload(user.get("credits")),
+        "stripe_subscription_id": user.get("stripe_subscription_id"),
+        "subscription_status": user.get("subscription_status"),
         "created_at": user.get("created_at").isoformat() if hasattr(user.get("created_at"), "isoformat") else user.get("created_at"),
     }
 
@@ -171,12 +174,27 @@ def list_generation_history(db, *, user_id: str, limit: int = 50) -> list[dict[s
     return [serialize_history_item(item) for item in cursor]
 
 
-def update_user_billing(db, user: dict[str, Any], *, plan_id: str | None = None, credits: dict[str, int] | None = None) -> dict[str, Any]:
+def update_user_billing(
+    db,
+    user: dict[str, Any],
+    *,
+    plan_id: str | None = None,
+    credits: dict[str, int] | None = None,
+    stripe_customer_id: str | None = None,
+    stripe_subscription_id: str | None = None,
+    subscription_status: str | None = None,
+) -> dict[str, Any]:
     update: dict[str, Any] = {"updated_at": utc_now()}
     if plan_id is not None:
         update["plan_id"] = plan_payload(plan_id)["id"]
     if credits is not None:
         update["credits"] = credits_payload(credits)
+    if stripe_customer_id is not None:
+        update["stripe_customer_id"] = stripe_customer_id
+    if stripe_subscription_id is not None:
+        update["stripe_subscription_id"] = stripe_subscription_id
+    if subscription_status is not None:
+        update["subscription_status"] = subscription_status
     db["users"].update_one({"_id": user["_id"]}, {"$set": update})
     updated = {**user, **update}
     return updated
@@ -230,3 +248,47 @@ def record_credit_purchase(
         }
     )
     return True, add_credits(db, user_id=user_id, image=image_credits, video=video_credits, plan_id=plan_id)
+
+
+def record_subscription_credit_refresh(
+    db,
+    *,
+    user_id: str,
+    event_id: str,
+    plan_id: str,
+    image_credits: int,
+    video_credits: int,
+    stripe_customer_id: str | None = None,
+    stripe_subscription_id: str | None = None,
+    subscription_status: str | None = None,
+) -> tuple[bool, dict[str, Any] | None]:
+    existing = db["credit_refreshes"].find_one({"event_id": event_id})
+    if existing:
+        return False, get_user_by_id(db, user_id)
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return False, None
+    credits = {"image": int(image_credits), "video": int(video_credits)}
+    updated = update_user_billing(
+        db,
+        user,
+        plan_id=plan_id,
+        credits=credits,
+        stripe_customer_id=stripe_customer_id,
+        stripe_subscription_id=stripe_subscription_id,
+        subscription_status=subscription_status,
+    )
+    db["credit_refreshes"].insert_one(
+        {
+            "user_id": str(user_id),
+            "event_id": event_id,
+            "plan_id": plan_id,
+            "image_credits": int(image_credits),
+            "video_credits": int(video_credits),
+            "stripe_customer_id": stripe_customer_id,
+            "stripe_subscription_id": stripe_subscription_id,
+            "subscription_status": subscription_status,
+            "created_at": utc_now(),
+        }
+    )
+    return True, updated

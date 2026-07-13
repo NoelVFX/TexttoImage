@@ -14,7 +14,7 @@ A Flask web app that turns prompts into images with Pollinations and uses a cost
 - Optional FLUX/Fal.ai inpainting masked edits remain available via `INPAINT_PROVIDER=fal`
 - Color-only masked edits also use OpenAI image edits with a stricter prompt that asks to preserve object shape, size, texture, lighting, shadows, and background while changing only the selected color
 - User auth API backed by MongoDB: register, login, logout, current user, and per-user generation history
-- Billing/credits page for logged-in users showing the current plan, image/video credit balances, and Stripe Checkout plan cards. Paid checkout completion/webhooks add credits to the user's account.
+- Billing/credits page for logged-in users showing the current plan, image/video credit balances, and Stripe Checkout subscription plan cards. Checkout stores the user's card, charges monthly on the checkout day, and successful invoices refresh the user's credits.
 - Image download link
 - Text-to-video prompt input in the browser
 - Optional OpenRouter/Wan generated audio for video clips
@@ -57,9 +57,10 @@ Optional variables:
 - `FLASK_SECRET_KEY` - long random string used to sign login sessions
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` - optional Google OAuth credentials for `/auth/google`; add the deployed callback URL `/auth/google/callback` in Google Cloud Console. On Railway, the app honors forwarded HTTPS proxy headers so the callback is generated as `https://.../auth/google/callback`.
 - `GOOGLE_REDIRECT_URI` - optional exact Google OAuth callback override, useful if Google still reports `redirect_uri_mismatch`; set it to the exact allowlisted URL such as `https://texttoimage-production-f09d.up.railway.app/auth/google/callback`
-- `STRIPE_SECRET_KEY` - Stripe secret key used to create hosted Checkout Sessions for paid credit bundles
-- `STRIPE_WEBHOOK_SECRET` - Stripe webhook signing secret for `/stripe/webhook`; Stripe should send `checkout.session.completed` events here
-- `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO` - optional Stripe Price IDs for each credit bundle. If omitted, the app uses inline Checkout `price_data` amounts.
+- `STRIPE_SECRET_KEY` - Stripe secret key used to create hosted Checkout Sessions for paid monthly credit subscriptions
+- `STRIPE_WEBHOOK_SECRET` - Stripe webhook signing secret for `/stripe/webhook`; Stripe should send `checkout.session.completed` and `invoice.paid` events here
+- `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO` - optional recurring monthly Stripe Price IDs for each credit plan. If omitted, the app uses inline recurring Checkout `price_data` amounts.
+- `STRIPE_TRANSFER_DESTINATION_ACCOUNT` - optional Stripe Connect connected account ID (`acct_...`) used as `subscription_data.transfer_data.destination` so subscription payments are destination charges to that account. Stripe cannot transfer directly to an arbitrary card; connect a bank/card payout destination in that connected Stripe account.
 - `OPENROUTER_HTTP_REFERER` - your deployed site URL
 - `OPENROUTER_APP_TITLE` - app title shown to OpenRouter
 - `POLLINATIONS_MODEL` - free image model for browser images and I2V first frames; defaults to `flux` to avoid the public GPT image queue/rate-limit message
@@ -96,10 +97,12 @@ Billing/credits:
 - Logged-in users start on the Free plan with 25 image credits and 3 video credits.
 - Image generation and masked image edits spend 1 image credit.
 - Video generation spends 1 video credit when `/video/start` is submitted.
-- `/billing` shows current credits and paid bundles.
-- Paid plan buttons create Stripe-hosted Checkout Sessions via `/billing/checkout/<plan_id>`.
-- Configure Stripe webhook `checkout.session.completed` to `https://<your-domain>/stripe/webhook`; the webhook credits the user's account idempotently by Stripe Checkout Session ID.
-- Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` in deployment. `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_CREATOR`, and `STRIPE_PRICE_PRO` are optional; if unset, the app uses inline Checkout `price_data` for the demo bundles.
+- `/billing` shows current credits and paid monthly subscription plans.
+- Paid plan buttons create Stripe-hosted subscription Checkout Sessions via `/billing/checkout/<plan_id>`.
+- Checkout stores the user's payment method and Stripe automatically charges the subscription monthly on the date the user first pays.
+- Configure Stripe webhook `checkout.session.completed` and `invoice.paid` to `https://<your-domain>/stripe/webhook`.
+- `checkout.session.completed` activates the plan and sets the first monthly credit allowance. Later `invoice.paid` events refresh credits to that plan's monthly allowance. Both paths are idempotent by event/session/invoice ID.
+- Set `STRIPE_TRANSFER_DESTINATION_ACCOUNT=acct_...` only if you have a Stripe Connect connected account to receive destination charges. Stripe payouts to a specific card/bank are configured inside that connected account; do not collect raw card/bank details in this app.
 
 ## Run locally
 
