@@ -27,6 +27,7 @@ from AuthService import (
     generate_reset_token,
     get_user_by_id,
     list_generation_history,
+    normalize_email,
     plan_payload,
     record_generation_history,
     record_subscription_credit_refresh,
