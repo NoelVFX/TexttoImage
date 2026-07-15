@@ -4,10 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import hashlib
 import os
+import requests
 import secrets
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -396,24 +394,18 @@ def reset_password(db, email: str, token: str, new_password: str) -> tuple[bool,
 
 
 def send_password_reset_email(email: str, reset_link: str, display_name: str | None = None) -> tuple[bool, str | None]:
-    """Send a password reset email via Gmail SMTP.
+    """Send a password reset email via Resend API (test mode).
 
-    Returns (success, error_message). Requires GMAIL_SMTP_USER and GMAIL_SMTP_PASSWORD env vars.
-    
-    Setup:
-    1. Enable 2FA on your Google account
-    2. Generate an App Password: https://myaccount.google.com/apppasswords
-    3. Set GMAIL_SMTP_USER=your_email@gmail.com
-    4. Set GMAIL_SMTP_PASSWORD=your_16_char_app_password
+    Test mode: emails only deliver to YOUR Resend account email.
+    Production: requires RESEND_API_KEY + verified domain.
     """
-    smtp_user = os.getenv("GMAIL_SMTP_USER")
-    smtp_password = os.getenv("GMAIL_SMTP_PASSWORD")
-    
-    if not smtp_user or not smtp_password:
-        return False, "GMAIL_SMTP_USER and GMAIL_SMTP_PASSWORD not configured. See setup instructions in code comments."
-    
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        return False, "RESEND_API_KEY not configured."
+
+    # Test mode: use Resend's shared domain - emails only go to your Resend account email
+    from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
     from_name = os.getenv("RESEND_FROM_NAME", "TTI App")
-    from_email = os.getenv("RESEND_FROM_EMAIL", smtp_user)
 
     subject = "Reset your password"
     safe_name = escape_html(display_name or email.split("@")[0])
@@ -436,60 +428,23 @@ def send_password_reset_email(email: str, reset_link: str, display_name: str | N
 </body>
 </html>"""
 
-    text = f"""Reset your password
-
-Hi {safe_name},
-
-You requested to reset your password. Visit this link to create a new password:
-
-{safe_link}
-
-This link expires in {int(os.getenv("RESET_TOKEN_EXPIRY_HOURS", "2"))} hours. If you didn't request this, you can safely ignore this email.
-
----
-TTI App
-"""
-
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = email
-        
-        msg.attach(MIMEText(text, "plain"))
-        msg.attach(MIMEText(html, "html"))
-        
-        print(f"[DEBUG] Connecting to smtp.gmail.com:587 as {smtp_user}")
-        try:
-            with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-                server.set_debuglevel(1)
-                print("[DEBUG] Starting TLS...")
-                server.starttls()
-                print("[DEBUG] Logging in...")
-                server.login(smtp_user, smtp_password)
-                print("[DEBUG] Sending message...")
-                server.send_message(msg)
-                print("[DEBUG] Email sent successfully via port 587!")
-        except (OSError, smtplib.SMTPConnectError, TimeoutError) as e:
-            print(f"[DEBUG] Port 587 failed ({e}), trying SSL port 465...")
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-                server.set_debuglevel(1)
-                print("[DEBUG] Logging in via SSL...")
-                server.login(smtp_user, smtp_password)
-                print("[DEBUG] Sending message via SSL...")
-                server.send_message(msg)
-                print("[DEBUG] Email sent successfully via port 465!")
-        
+        print(f"[DEBUG] Sending reset email via Resend to {email}")
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "from": f"{from_name} <{from_email}>",
+                "to": [email],
+                "subject": subject,
+                "html": html,
+            },
+            timeout=15,
+        )
+        print(f"[DEBUG] Resend response: {response.status_code} {response.text[:200]}")
+        if response.status_code >= 400:
+            return False, f"Resend API error: {response.status_code} {response.text[:200]}"
+        print("[DEBUG] Reset email sent successfully via Resend")
         return True, None
-    except smtplib.SMTPAuthenticationError as e:
-        return False, f"Gmail SMTP auth failed: {e}. Use App Password (16 chars), not regular password."
-    except smtplib.SMTPConnectError as e:
-        return False, f"Cannot connect to Gmail SMTP (both ports blocked?): {e}"
-    except smtplib.SMTPServerDisconnected as e:
-        return False, f"Gmail closed connection unexpectedly: {e}"
-    except TimeoutError as e:
-        return False, f"SMTP timeout (10s) - Railway IP likely blocked by Gmail: {e}"
-    except smtplib.SMTPException as exc:
-        return False, f"SMTP error: {exc}"
-    except Exception as exc:
-        return False, f"Unexpected error: {type(exc).__name__}: {exc}"
+    except requests.RequestException as exc:
+        return False, f"Failed to send email: {exc}"
