@@ -460,21 +460,31 @@ TTI App
         msg.attach(MIMEText(html, "html"))
         
         print(f"[DEBUG] Connecting to smtp.gmail.com:587 as {smtp_user}")
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.set_debuglevel(1)  # Print SMTP conversation to stdout
-            print("[DEBUG] Starting TLS...")
-            server.starttls()
-            print("[DEBUG] Logging in...")
-            server.login(smtp_user, smtp_password)
-            print("[DEBUG] Sending message...")
-            server.send_message(msg)
-            print("[DEBUG] Email sent successfully!")
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+                server.set_debuglevel(1)
+                print("[DEBUG] Starting TLS...")
+                server.starttls()
+                print("[DEBUG] Logging in...")
+                server.login(smtp_user, smtp_password)
+                print("[DEBUG] Sending message...")
+                server.send_message(msg)
+                print("[DEBUG] Email sent successfully via port 587!")
+        except (OSError, smtplib.SMTPConnectError, TimeoutError) as e:
+            print(f"[DEBUG] Port 587 failed ({e}), trying SSL port 465...")
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+                server.set_debuglevel(1)
+                print("[DEBUG] Logging in via SSL...")
+                server.login(smtp_user, smtp_password)
+                print("[DEBUG] Sending message via SSL...")
+                server.send_message(msg)
+                print("[DEBUG] Email sent successfully via port 465!")
         
         return True, None
     except smtplib.SMTPAuthenticationError as e:
         return False, f"Gmail SMTP auth failed: {e}. Use App Password (16 chars), not regular password."
     except smtplib.SMTPConnectError as e:
-        return False, f"Cannot connect to Gmail SMTP (port 587 blocked?): {e}"
+        return False, f"Cannot connect to Gmail SMTP (both ports blocked?): {e}"
     except smtplib.SMTPServerDisconnected as e:
         return False, f"Gmail closed connection unexpectedly: {e}"
     except TimeoutError as e:
