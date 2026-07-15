@@ -518,7 +518,7 @@ def forgot_password():
                 public_base = f"{scheme}://{forwarded_host}"
         if not public_base:
             public_base = request.host_url.rstrip("/")
-        reset_link = f"{public_base}/reset-password?token={token}&email={email}"
+        reset_link = f"{public_base}/auth/reset-password?token={token}&email={email}"
         
         print(f"[DEBUG] Sending reset email to {email} with link {reset_link}")
         success, error = send_password_reset_email(email, reset_link, display_name)
