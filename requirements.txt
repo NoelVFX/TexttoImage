@@ -6,4 +6,3 @@ Pillow==12.2.0
 pymongo==4.10.1
 dnspython==2.7.0
 stripe==12.5.0
-resend==2.33.0

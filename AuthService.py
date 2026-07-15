@@ -4,8 +4,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import hashlib
 import os
-import requests
 import secrets
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -394,16 +396,24 @@ def reset_password(db, email: str, token: str, new_password: str) -> tuple[bool,
 
 
 def send_password_reset_email(email: str, reset_link: str, display_name: str | None = None) -> tuple[bool, str | None]:
-    """Send a password reset email via Resend API.
+    """Send a password reset email via Gmail SMTP.
 
-    Returns (success, error_message). Requires RESEND_API_KEY env var.
+    Returns (success, error_message). Requires GMAIL_SMTP_USER and GMAIL_SMTP_PASSWORD env vars.
+    
+    Setup:
+    1. Enable 2FA on your Google account
+    2. Generate an App Password: https://myaccount.google.com/apppasswords
+    3. Set GMAIL_SMTP_USER=your_email@gmail.com
+    4. Set GMAIL_SMTP_PASSWORD=your_16_char_app_password
     """
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
-        return False, "RESEND_API_KEY not configured."
-
+    smtp_user = os.getenv("GMAIL_SMTP_USER")
+    smtp_password = os.getenv("GMAIL_SMTP_PASSWORD")
+    
+    if not smtp_user or not smtp_password:
+        return False, "GMAIL_SMTP_USER and GMAIL_SMTP_PASSWORD not configured. See setup instructions in code comments."
+    
     from_name = os.getenv("RESEND_FROM_NAME", "TTI App")
-    from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+    from_email = os.getenv("RESEND_FROM_EMAIL", smtp_user)
 
     subject = "Reset your password"
     safe_name = escape_html(display_name or email.split("@")[0])
@@ -419,27 +429,43 @@ def send_password_reset_email(email: str, reset_link: str, display_name: str | N
     <p style="text-align: center; margin: 32px 0;">
       <a href="{safe_link}" style="background: #1a1a2e; color: white; padding: 14px 28px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">Reset Password</a>
     </p>
-    <p style="color: #666; font-size: 14px;">This link expires in {RESET_TOKEN_TTL_HOURS} hours. If you didn't request this, you can safely ignore this email.</p>
+    <p style="color: #666; font-size: 14px;">This link expires in {int(os.getenv("RESET_TOKEN_EXPIRY_HOURS", "2"))} hours. If you didn't request this, you can safely ignore this email.</p>
     <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
     <p style="color: #999; font-size: 12px;">If the button doesn't work, copy this link: {safe_link}</p>
   </div>
 </body>
 </html>"""
 
+    text = f"""Reset your password
+
+Hi {safe_name},
+
+You requested to reset your password. Visit this link to create a new password:
+
+{safe_link}
+
+This link expires in {int(os.getenv("RESET_TOKEN_EXPIRY_HOURS", "2"))} hours. If you didn't request this, you can safely ignore this email.
+
+---
+TTI App
+"""
+
     try:
-        response = requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "from": f"{from_name} <{from_email}>",
-                "to": [email],
-                "subject": subject,
-                "html": html,
-            },
-            timeout=15,
-        )
-        if response.status_code >= 400:
-            return False, f"Resend API error: {response.status_code} {response.text[:200]}"
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = email
+        
+        msg.attach(MIMEText(text, "plain"))
+        msg.attach(MIMEText(html, "html"))
+        
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        
         return True, None
-    except requests.RequestException as exc:
+    except smtplib.SMTPAuthenticationError:
+        return False, "Gmail SMTP authentication failed. Check your App Password (not your regular password)."
+    except smtplib.SMTPException as exc:
         return False, f"Failed to send email: {exc}"
