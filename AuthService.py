@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+import hashlib
+import os
+import requests
+import secrets
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -88,7 +92,6 @@ def authenticate_user(db, email: str, password: str) -> dict[str, Any] | None:
 
 
 def get_user_by_id(db, user_id: str) -> dict[str, Any] | None:
-    # ObjectId conversion is intentionally optional so tests/fakes and string ids work.
     candidates = [user_id]
     try:
         from bson import ObjectId
@@ -292,3 +295,151 @@ def record_subscription_credit_refresh(
         }
     )
     return True, updated
+
+
+# ---------------------------------------------------------------------------
+# Password Reset Functions
+# ---------------------------------------------------------------------------
+
+RESET_TOKEN_TTL_HOURS = int(os.getenv("RESET_TOKEN_EXPIRY_HOURS", "2"))
+RESET_TOKEN_BYTES = 32
+
+
+def escape_html(text: str) -> str:
+    """Basic HTML escaping for email template."""
+    return (
+        str(text or "")
+        .replace("&", "\u0026amp;")
+        .replace("<", "\u0026lt;")
+        .replace(">", "\u0026gt;")
+        .replace('"', "\u0026quot;")
+        .replace("'", "\u0026#x27;")
+    )
+
+
+def generate_reset_token(db, email: str) -> str | None:
+    """Generate a secure password reset token for the given email.
+
+    Stores the hashed token and expiry on the user document.
+    Returns the plain token (only shown once) or None if user not found.
+    """
+    email = normalize_email(email)
+    user = db["users"].find_one({"email": email})
+    if not user:
+        return None
+
+    plain_token = secrets.token_urlsafe(RESET_TOKEN_BYTES)
+    token_hash = hashlib.sha256(plain_token.encode()).hexdigest()
+    expires_at = utc_now() + timedelta(hours=RESET_TOKEN_TTL_HOURS)
+
+    db["users"].update_one(
+        {"_id": user["_id"]},
+        {"$set": {"reset_token_hash": token_hash, "reset_token_expires": expires_at, "updated_at": utc_now()}},
+    )
+    return plain_token
+
+
+def verify_reset_token(db, email: str, token: str) -> dict | None:
+    """Verify a password reset token.
+
+    Returns the user document if token is valid and not expired, else None.
+    """
+    email = normalize_email(email)
+    user = db["users"].find_one({"email": email})
+    if not user:
+        return None
+
+    stored_hash = user.get("reset_token_hash")
+    expires_at = user.get("reset_token_expires")
+    if not stored_hash or not expires_at:
+        return None
+
+    if utc_now() > expires_at:
+        return None
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if not secrets.compare_digest(stored_hash, token_hash):
+        return None
+
+    return user
+
+
+def clear_reset_token(db, user_id) -> None:
+    """Clear the password reset token from the user document."""
+    db["users"].update_one(
+        {"_id": user_id},
+        {"$unset": {"reset_token_hash": "", "reset_token_expires": ""}, "$set": {"updated_at": utc_now()}},
+    )
+
+
+def reset_password(db, email: str, token: str, new_password: str) -> tuple[bool, str | None]:
+    """Reset the user's password using a valid reset token.
+
+    Returns (success, error_message). On success, clears the reset token.
+    """
+    if not new_password or len(new_password) < 8:
+        return False, "Password must be at least 8 characters."
+
+    user = verify_reset_token(db, email, token)
+    if not user:
+        return False, "Invalid or expired reset token."
+
+    password_hash = generate_password_hash(new_password)
+    db["users"].update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": password_hash, "updated_at": utc_now()}},
+    )
+    clear_reset_token(db, user["_id"])
+    return True, None
+
+
+def send_password_reset_email(email: str, reset_link: str, display_name: str | None = None) -> tuple[bool, str | None]:
+    """Send a password reset email via Resend API.
+
+    Returns (success, error_message). Requires RESEND_API_KEY env var.
+    """
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        return False, "RESEND_API_KEY not configured."
+
+    from_name = os.getenv("RESEND_FROM_NAME", "TTI App")
+    from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+
+    subject = "Reset your password"
+    safe_name = escape_html(display_name or email.split("@")[0])
+    safe_link = escape_html(reset_link)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #f8f9fa; border-radius: 8px; padding: 32px;">
+    <h1 style="color: #1a1a2e; margin-top: 0;">Reset your password</h1>
+    <p>Hi {safe_name},</p>
+    <p>You requested to reset your password. Click the button below to create a new password:</p>
+    <p style="text-align: center; margin: 32px 0;">
+      <a href="{safe_link}" style="background: #1a1a2e; color: white; padding: 14px 28px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">Reset Password</a>
+    </p>
+    <p style="color: #666; font-size: 14px;">This link expires in {RESET_TOKEN_TTL_HOURS} hours. If you didn't request this, you can safely ignore this email.</p>
+    <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+    <p style="color: #999; font-size: 12px;">If the button doesn't work, copy this link: {safe_link}</p>
+  </div>
+</body>
+</html>"""
+
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "from": f"{from_name} <{from_email}>",
+                "to": [email],
+                "subject": subject,
+                "html": html,
+            },
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            return False, f"Resend API error: {response.status_code} {response.text[:200]}"
+        return True, None
+    except requests.RequestException as exc:
+        return False, f"Failed to send email: {exc}"

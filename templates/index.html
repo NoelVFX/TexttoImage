@@ -37,6 +37,7 @@
             <label for="login-password">Password</label>
             <input type="password" id="login-password" name="password" autocomplete="current-password" required>
             <button type="submit">Login</button>
+            <p class="forgot-password-link"><a href="#" id="forgot-password-link">Forgot password?</a></p>
           </form>
           <form class="generator-form auth-form" id="register-form">
             <h3>Register</h3>
@@ -48,6 +49,20 @@
             <input type="password" id="register-password" name="password" autocomplete="new-password" minlength="8" required>
             <button type="submit">Create account</button>
           </form>
+          {% if show_reset_password %}
+          <form class="generator-form auth-form" id="reset-password-form">
+            <h3>Reset Password</h3>
+            <p class="form-hint">Enter your new password below.</p>
+            <input type="hidden" id="reset-token" name="token" value="{{ reset_token }}">
+            <input type="hidden" id="reset-email" name="email" value="{{ reset_email }}">
+            <label for="reset-password">New Password</label>
+            <input type="password" id="reset-password" name="password" autocomplete="new-password" minlength="8" required>
+            <label for="reset-password-confirm">Confirm Password</label>
+            <input type="password" id="reset-password-confirm" name="password_confirm" autocomplete="new-password" minlength="8" required>
+            <button type="submit">Reset Password</button>
+            <p class="form-hint"><a href="#" id="back-to-login-link">Back to login</a></p>
+          </form>
+          {% endif %}
         </div>
         <div class="google-login-row {% if is_logged_in %}hidden{% endif %}" id="google-login-row">
           <a class="download-button google-login-button" href="/auth/google">Continue with Google</a>
@@ -271,6 +286,9 @@
     const clearLibraryButton = document.getElementById('clear-session-library');
     const loginForm = document.getElementById('login-form');
     const registerForm = document.getElementById('register-form');
+    const resetPasswordForm = document.getElementById('reset-password-form');
+    const forgotPasswordLink = document.getElementById('forgot-password-link');
+    const backToLoginLink = document.getElementById('back-to-login-link');
     const accountAuthGrid = document.getElementById('account-auth-grid');
     const accountStatusPanel = document.getElementById('account-status-panel');
     const accountStatusLine = document.getElementById('account-status-line');
@@ -496,6 +514,67 @@
         const data = await authJson('/auth/register', Object.fromEntries(formData.entries()));
         accountMessage.textContent = 'Account created.';
         renderAccountState(data.user);
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    });
+
+    // Forgot password link - show reset password form
+    forgotPasswordLink?.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const email = loginForm?.querySelector('#login-email')?.value?.trim();
+      if (!email) {
+        accountMessage.textContent = 'Please enter your email first.';
+        return;
+      }
+      accountMessage.textContent = 'Sending reset link...';
+      try {
+        const response = await fetch('/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await parseJsonResponse(response, 'Forgot password request failed.');
+        if (!response.ok || data.error) throw new Error(data.error || 'Request failed');
+        accountMessage.textContent = data.message || 'If the email exists, a reset link has been sent.';
+        // Show the reset password form (it will be rendered by the server on the reset page)
+        // For now, we'll redirect to the reset page with the token from the email
+        // But since we can't get the token from the email here, we just show success
+      } catch (error) {
+        accountMessage.textContent = error.message;
+      }
+    });
+
+    // Back to login link - hide reset password form
+    backToLoginLink?.addEventListener('click', (event) => {
+      event.preventDefault();
+      resetPasswordForm?.classList.add('hidden');
+      loginForm?.classList.remove('hidden');
+      registerForm?.classList.remove('hidden');
+      accountMessage.textContent = '';
+    });
+
+    // Reset password form submission
+    resetPasswordForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const password = resetPasswordForm?.querySelector('#reset-password')?.value;
+      const confirmPassword = resetPasswordForm?.querySelector('#reset-password-confirm')?.value;
+      if (password !== confirmPassword) {
+        accountMessage.textContent = 'Passwords do not match.';
+        return;
+      }
+      if (password.length < 8) {
+        accountMessage.textContent = 'Password must be at least 8 characters.';
+        return;
+      }
+      accountMessage.textContent = 'Resetting password...';
+      const formData = new FormData(resetPasswordForm);
+      try {
+        const data = await authJson('/auth/reset-password', Object.fromEntries(formData.entries()));
+        accountMessage.textContent = data.message || 'Password has been reset. You can now log in.';
+        resetPasswordForm?.classList.add('hidden');
+        loginForm?.classList.remove('hidden');
+        registerForm?.classList.remove('hidden');
       } catch (error) {
         accountMessage.textContent = error.message;
       }

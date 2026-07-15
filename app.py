@@ -24,15 +24,19 @@ from AuthService import (
     authenticate_user,
     create_user,
     ensure_auth_indexes,
+    generate_reset_token,
     get_user_by_id,
     list_generation_history,
     plan_payload,
     record_generation_history,
     record_subscription_credit_refresh,
+    reset_password,
+    send_password_reset_email,
     serialize_user,
     spend_credit,
     update_user_billing,
     upsert_google_user,
+    verify_reset_token,
 )
 from Database import get_database
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
@@ -482,6 +486,79 @@ def auth_history():
         return jsonify({"error": "Not logged in."}), 401
     limit = max(1, min(100, int(request.args.get("limit", "50"))))
     return jsonify({"items": list_generation_history(db, user_id=user_id, limit=limit)})
+
+
+# ---------------------------------------------------------------------------
+# Password Reset Routes
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/forgot-password")
+def forgot_password():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or request.form
+    email = normalize_email(payload.get("email", ""))
+    if not email or "@" not in email:
+        return jsonify({"error": "A valid email is required."}), 400
+
+    # Always return success to prevent email enumeration
+    token = generate_reset_token(db, email)
+    if token:
+        user = db["users"].find_one({"email": email})
+        display_name = user.get("display_name") if user else None
+        # Build reset link - use public base URL if configured, otherwise request host
+        public_base = os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or ""
+        if not public_base and has_request_context():
+            forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+            forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+            if forwarded_host:
+                scheme = forwarded_proto or request.scheme
+                public_base = f"{scheme}://{forwarded_host}"
+        if not public_base:
+            public_base = request.host_url.rstrip("/")
+        reset_link = f"{public_base}/reset-password?token={token}&email={email}"
+        send_password_reset_email(email, reset_link, display_name)
+
+    return jsonify({"ok": True, "message": "If the email exists, a reset link has been sent."})
+
+
+@app.get("/auth/reset-password")
+def reset_password_page():
+    """Serve the reset password page (handled by frontend template)."""
+    token = request.args.get("token", "")
+    email = request.args.get("email", "")
+    return render_index(show_reset_password=True, reset_token=token, reset_email=email)
+
+
+@app.post("/auth/reset-password")
+def reset_password_route():
+    db, error_response = require_db()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or request.form
+    email = normalize_email(payload.get("email", ""))
+    token = (payload.get("token") or "").strip()
+    new_password = payload.get("password", "")
+
+    if not email or "@" not in email:
+        return jsonify({"error": "A valid email is required."}), 400
+    if not token:
+        return jsonify({"error": "Reset token is required."}), 400
+    if not new_password or len(new_password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+
+    # Verify the token matches the email
+    user = verify_reset_token(db, email, token)
+    if not user:
+        return jsonify({"error": "Invalid or expired reset token."}), 400
+
+    # Reset the password
+    success, error = reset_password(db, email, token, new_password)
+    if not success:
+        return jsonify({"error": error or "Failed to reset password."}), 400
+
+    return jsonify({"ok": True, "message": "Password has been reset. You can now log in."})
 
 
 def plan_by_id(plan_id: str) -> dict | None:
