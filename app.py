@@ -519,7 +519,13 @@ def forgot_password():
         if not public_base:
             public_base = request.host_url.rstrip("/")
         reset_link = f"{public_base}/reset-password?token={token}&email={email}"
-        send_password_reset_email(email, reset_link, display_name)
+        
+        print(f"[DEBUG] Sending reset email to {email} with link {reset_link}")
+        success, error = send_password_reset_email(email, reset_link, display_name)
+        if success:
+            print("[DEBUG] Reset email sent successfully")
+        else:
+            print(f"[ERROR] Failed to send reset email: {error}")
 
     return jsonify({"ok": True, "message": "If the email exists, a reset link has been sent."})
 

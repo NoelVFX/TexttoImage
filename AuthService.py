@@ -459,13 +459,27 @@ TTI App
         msg.attach(MIMEText(text, "plain"))
         msg.attach(MIMEText(html, "html"))
         
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        print(f"[DEBUG] Connecting to smtp.gmail.com:587 as {smtp_user}")
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.set_debuglevel(1)  # Print SMTP conversation to stdout
+            print("[DEBUG] Starting TLS...")
             server.starttls()
+            print("[DEBUG] Logging in...")
             server.login(smtp_user, smtp_password)
+            print("[DEBUG] Sending message...")
             server.send_message(msg)
+            print("[DEBUG] Email sent successfully!")
         
         return True, None
-    except smtplib.SMTPAuthenticationError:
-        return False, "Gmail SMTP authentication failed. Check your App Password (not your regular password)."
+    except smtplib.SMTPAuthenticationError as e:
+        return False, f"Gmail SMTP auth failed: {e}. Use App Password (16 chars), not regular password."
+    except smtplib.SMTPConnectError as e:
+        return False, f"Cannot connect to Gmail SMTP (port 587 blocked?): {e}"
+    except smtplib.SMTPServerDisconnected as e:
+        return False, f"Gmail closed connection unexpectedly: {e}"
+    except TimeoutError as e:
+        return False, f"SMTP timeout (10s) - Railway IP likely blocked by Gmail: {e}"
     except smtplib.SMTPException as exc:
-        return False, f"Failed to send email: {exc}"
+        return False, f"SMTP error: {exc}"
+    except Exception as exc:
+        return False, f"Unexpected error: {type(exc).__name__}: {exc}"
