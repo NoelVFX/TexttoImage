@@ -6,7 +6,8 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt && mkdir -p public && cp -r static/* public/ && echo '=== PUBLIC FILES ===' && ls -la public/"
+        "buildCommand": "pip install -r requirements.txt",
+        "includeFiles": ["public/**"]
       }
     }
   ],
