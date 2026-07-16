@@ -6,11 +6,19 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt && mkdir -p .vercel/output/static && cp -r static/* .vercel/output/static/ && echo '=== OUTPUT STATIC FILES ===' && ls -la .vercel/output/static/"
+        "buildCommand": "pip install -r requirements.txt"
       }
+    },
+    {
+      "src": "static/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/static/(.*)",
+      "dest": "/static/$1"
+    },
     {
       "src": "/(.*)",
       "dest": "/app.py"
