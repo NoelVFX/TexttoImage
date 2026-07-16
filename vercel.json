@@ -6,8 +6,7 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt",
-        "includeFiles": "static/**"
+        "buildCommand": "pip install -r requirements.txt && echo '=== STATIC FILES ===' && ls -la static/ && echo '=== INCLUDED FILES ===' && find . -name '*.css' -o -name '*.js' | head -20"
       }
     }
   ],
