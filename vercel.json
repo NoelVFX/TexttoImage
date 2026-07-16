@@ -5,16 +5,14 @@
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
-        "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt"
+        "maxDuration": 60
       }
     }
   ],
-  "includeFiles": ["static/**"],
   "routes": [
     {
       "src": "/static/(.*)",
-      "dest": "/static/$1"
+      "dest": "/public/$1"
     },
     {
       "src": "/(.*)",
