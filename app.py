@@ -88,11 +88,20 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 app.config["PREFERRED_URL_SCHEME"] = os.getenv("PREFERRED_URL_SCHEME", "https")
 app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
 
-# --- MongoDB Session Store (Flask-Session) ---
-# Uses the same MongoDB database for session persistence across serverless cold starts
-app.config["SESSION_TYPE"] = "mongodb"
-app.config["SESSION_MONGODB"] = get_database()
-app.config["SESSION_MONGODB_COLLECT"] = "sessions"
+# --- Session Store (Flask-Session) ---
+# Vercel: use filesystem sessions (writable /tmp)
+# Railway/Local: use MongoDB sessions
+is_vercel = os.getenv("VERCEL") == "1"
+if is_vercel:
+    app.config["SESSION_TYPE"] = "filesystem"
+    app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
+    app.config["SESSION_FILE_THRESHOLD"] = 500
+    app.config["SESSION_FILE_MODE"] = 384  # 0o600
+else:
+    app.config["SESSION_TYPE"] = "mongodb"
+    app.config["SESSION_MONGODB"] = get_database()
+    app.config["SESSION_MONGODB_COLLECT"] = "sessions"
+
 app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_USE_SIGNER"] = True
 app.config["SESSION_KEY_PREFIX"] = "tti:session:"
