@@ -2,6 +2,10 @@
   "version": 2,
   "builds": [
     {
+      "src": "static/**",
+      "use": "@vercel/static"
+    },
+    {
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
@@ -12,14 +16,13 @@
   "routes": [
     {
       "src": "/static/(.*)",
-      "dest": "/app.py"
+      "dest": "/static/$1"
     },
     {
       "src": "/(.*)",
       "dest": "/app.py"
     }
   ],
-  "includeFiles": ["static/**"],
   "env": {
     "PYTHON_VERSION": "3.11"
   },
