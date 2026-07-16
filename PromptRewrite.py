@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -148,19 +149,31 @@ def _api_key_available() -> bool:
     return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
-def _use_direct_api() -> bool:
-    """Prefer the OpenRouter HTTP API over the hermes CLI when possible.
+def _hermes_cli_available() -> bool:
+    _load_project_env()
+    return shutil.which(os.getenv("HERMES_COMMAND", "hermes")) is not None
 
-    Serverless hosts (Vercel) have no hermes binary, so the CLI path fails with
-    "no such file or directory: hermes". Direct API is used when the provider is
-    OpenRouter and an API key is configured; set PROMPT_REWRITE_USE_CLI=1 to
-    force the CLI locally.
+
+def _use_direct_api() -> bool:
+    """Decide between the hermes agent CLI and the OpenRouter HTTP API.
+
+    The hermes agent is preferred whenever its binary is installed (local dev,
+    a VM with hermes set up) — same behavior as before. Serverless hosts
+    (Vercel) have no hermes binary, so there the OpenRouter API is called
+    directly with the same provider/model/prompt. Overrides:
+    PROMPT_REWRITE_USE_CLI=1 forces the CLI, =0 forces the API.
     """
     _load_project_env()
-    if os.getenv("PROMPT_REWRITE_USE_CLI") == "1":
+    forced = os.getenv("PROMPT_REWRITE_USE_CLI")
+    if forced == "1":
         return False
     provider = (os.getenv("PROMPT_REWRITE_PROVIDER") or DEFAULT_PROMPT_REWRITE_PROVIDER).strip().lower()
-    return provider == "openrouter" and _api_key_available()
+    api_possible = provider == "openrouter" and _api_key_available()
+    if forced == "0":
+        return api_possible
+    if _hermes_cli_available():
+        return False  # hermes agent installed -> use it, like before
+    return api_possible
 
 
 def rewrite_prompt_via_api(
