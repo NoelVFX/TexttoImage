@@ -81,8 +81,13 @@ import os
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
+# Health check endpoint
+@app.route("/health")
+def health():
+    return {"status": "ok", "service": "textto-image"}
+
 # Explicitly serve static files for Vercel
-@app.route('/static/<path:filename>')
+@app.route("/static/<path:filename>")
 def serve_static(filename):
     return send_from_directory(app.static_folder, filename)
 
