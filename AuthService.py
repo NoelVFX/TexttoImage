@@ -354,6 +354,10 @@ def verify_reset_token(db, email: str, token: str) -> dict | None:
     if not stored_hash or not expires_at:
         return None
 
+    # Ensure expires_at is offset-aware for comparison with utc_now()
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
     if utc_now() > expires_at:
         return None
 
