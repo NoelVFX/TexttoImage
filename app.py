@@ -76,9 +76,15 @@ import json
 
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+from flask import Flask, send_from_directory
+import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', static_url_path='/static')
+
+# Explicitly serve static files for Vercel
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return send_from_directory(app.static_folder, filename)
 # Railway and similar platforms terminate HTTPS at a reverse proxy before
 # forwarding traffic to gunicorn over HTTP. ProxyFix makes Flask honor
 # X-Forwarded-Proto/Host so url_for(..., _external=True) builds the same
