@@ -79,7 +79,7 @@ GENERATED_DIR = BASE_DIR / "static" / "generated"
 from flask import Flask, send_from_directory
 import os
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
+app = Flask(__name__, static_folder='public', static_url_path='/static')
 
 # Health check endpoint
 @app.route("/health")
@@ -89,7 +89,7 @@ def health():
 # Explicitly serve static files for Vercel
 @app.route("/static/<path:filename>")
 def serve_static(filename):
-    return send_from_directory(app.static_folder, filename)
+    return send_from_directory("public", filename)
 
 # Railway and similar platforms terminate HTTPS at a reverse proxy before
 # forwarding traffic to gunicorn over HTTP. ProxyFix makes Flask honor
