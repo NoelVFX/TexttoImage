@@ -131,6 +131,7 @@ except Exception:
 # Serve static files directly (works on Vercel where static file serving is limited)
 @app.route("/static/<path:filename>")
 def serve_static(filename):
+    app.logger.info(f"Serving static file: {filename}")
     return send_from_directory("static", filename)
 
 
