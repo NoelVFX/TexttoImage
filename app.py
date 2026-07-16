@@ -98,9 +98,19 @@ if is_vercel:
     app.config["SESSION_FILE_THRESHOLD"] = 500
     app.config["SESSION_FILE_MODE"] = 384  # 0o600
 else:
-    app.config["SESSION_TYPE"] = "mongodb"
-    app.config["SESSION_MONGODB"] = get_database()
-    app.config["SESSION_MONGODB_COLLECT"] = "sessions"
+    from Database import get_mongo_client
+    mongo_client = get_mongo_client()
+    if mongo_client is not None:
+        app.config["SESSION_TYPE"] = "mongodb"
+        app.config["SESSION_MONGODB_CLIENT"] = mongo_client
+        app.config["SESSION_MONGODB_DB"] = os.getenv("MONGODB_DB", "tti_app")
+        app.config["SESSION_MONGODB_COLLECT"] = "sessions"
+    else:
+        # Fallback to filesystem if MongoDB not configured
+        app.config["SESSION_TYPE"] = "filesystem"
+        app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
+        app.config["SESSION_FILE_THRESHOLD"] = 500
+        app.config["SESSION_FILE_MODE"] = 384
 
 app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_USE_SIGNER"] = True

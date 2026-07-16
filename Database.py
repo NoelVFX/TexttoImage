@@ -44,16 +44,29 @@ def get_mongo_uri() -> str | None:
         return None
 
 
-def get_database():
-    uri = get_mongo_uri()
-    if not uri:
-        return None
-    try:
-        from pymongo import MongoClient
-    except ImportError as exc:
-        raise RuntimeError("pymongo is required for MongoDB support. Install requirements.txt.") from exc
+# Database connection (singleton)
+_mongo_client = None
 
-    client = MongoClient(uri, serverSelectionTimeoutMS=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")))
+def get_mongo_client():
+    """Get or create singleton MongoDB client."""
+    global _mongo_client
+    if _mongo_client is None:
+        uri = get_mongo_uri()
+        if not uri:
+            return None
+        from pymongo import MongoClient
+        _mongo_client = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")),
+            maxPoolSize=10,
+        )
+    return _mongo_client
+
+
+def get_database():
+    client = get_mongo_client()
+    if client is None:
+        return None
     db_name = os.getenv("MONGODB_DB", "tti_app")
     return client[db_name]
 
