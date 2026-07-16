@@ -15,8 +15,9 @@ from OpenRouterVideo import OPENROUTER_API_BASE, load_local_env, openrouter_head
 
 DEFAULT_PROMPT_REWRITE_TIMEOUT = 30
 DEFAULT_PROMPT_REWRITE_MAX_WORDS = 45
-DEFAULT_PROMPT_REWRITE_PROVIDER = "openrouter"
-DEFAULT_PROMPT_REWRITE_MODEL = "openai/gpt-4o-mini"
+DEFAULT_PROMPT_REWRITE_PROVIDER = "openai"
+DEFAULT_PROMPT_REWRITE_MODEL = "gpt-5-mini"
+OPENAI_API_BASE = "https://api.openai.com/v1"
 SUPPORTED_MEDIA_TYPES = {"image", "video"}
 WARNING_LINE_PATTERNS = (
     re.compile(r"tirith security scanner", flags=re.IGNORECASE),
@@ -145,9 +146,19 @@ def limit_prompt_words(text: str, max_words: int = DEFAULT_PROMPT_REWRITE_MAX_WO
     return shortened
 
 
+def _rewrite_provider() -> str:
+    _load_project_env()
+    return (os.getenv("PROMPT_REWRITE_PROVIDER") or DEFAULT_PROMPT_REWRITE_PROVIDER).strip().lower()
+
+
 def _api_key_available() -> bool:
     _load_project_env()
-    return bool(os.getenv("OPENROUTER_API_KEY"))
+    provider = _rewrite_provider()
+    if provider == "openai":
+        return bool(os.getenv("OPENAI_API_KEY"))
+    if provider == "openrouter":
+        return bool(os.getenv("OPENROUTER_API_KEY"))
+    return False
 
 
 def _hermes_base_command(hermes_command: str | None = None) -> list[str]:
@@ -178,8 +189,7 @@ def _use_direct_api() -> bool:
     forced = os.getenv("PROMPT_REWRITE_USE_CLI")
     if forced == "1":
         return False
-    provider = (os.getenv("PROMPT_REWRITE_PROVIDER") or DEFAULT_PROMPT_REWRITE_PROVIDER).strip().lower()
-    api_possible = provider == "openrouter" and _api_key_available()
+    api_possible = _rewrite_provider() in ("openai", "openrouter") and _api_key_available()
     if forced == "0":
         return api_possible
     if _hermes_cli_available():
@@ -195,14 +205,31 @@ def rewrite_prompt_via_api(
     model: str | None = None,
     timeout: int | None = None,
 ) -> str:
-    """Rewrite the prompt by calling OpenRouter's chat API directly (no CLI needed)."""
+    """Rewrite the prompt by calling the provider's chat API directly (no CLI needed).
+
+    PROMPT_REWRITE_PROVIDER=openai -> api.openai.com with OPENAI_API_KEY (default);
+    PROMPT_REWRITE_PROVIDER=openrouter -> openrouter.ai with OPENROUTER_API_KEY.
+    """
     _load_project_env()
+    provider = _rewrite_provider()
     model = model or os.getenv("PROMPT_REWRITE_MODEL") or DEFAULT_PROMPT_REWRITE_MODEL
     timeout = timeout if timeout is not None else max(1, _env_int("PROMPT_REWRITE_TIMEOUT", DEFAULT_PROMPT_REWRITE_TIMEOUT))
-    try:
-        headers = openrouter_headers()
-    except Exception as exc:
-        raise PromptRewriteError(f"AI prompt rewrite is not configured: {exc}") from exc
+
+    if provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise PromptRewriteError("AI prompt rewrite is not configured: OPENAI_API_KEY is not set.")
+        # Accept OpenRouter-style ids (openai/gpt-5-mini) for the native API too.
+        model = model.removeprefix("openai/")
+        url = f"{OPENAI_API_BASE}/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    else:
+        url = f"{OPENROUTER_API_BASE}/chat/completions"
+        try:
+            headers = openrouter_headers()
+        except Exception as exc:
+            raise PromptRewriteError(f"AI prompt rewrite is not configured: {exc}") from exc
+
     payload = {
         "model": model,
         "messages": [
@@ -211,11 +238,20 @@ def rewrite_prompt_via_api(
                 "content": build_prompt_rewrite_prompt(prompt, media_type=media_type, aspect_ratio=aspect_ratio),
             }
         ],
-        "max_tokens": 200,
-        "temperature": 0.7,
     }
+    if provider == "openai" and model.startswith(("gpt-5", "o")):
+        # Reasoning models reject max_tokens/temperature; cap generously because
+        # max_completion_tokens includes hidden reasoning tokens.
+        payload["max_completion_tokens"] = _env_int("PROMPT_REWRITE_MAX_COMPLETION_TOKENS", 2000)
+        effort = os.getenv("PROMPT_REWRITE_REASONING_EFFORT", "minimal").strip()
+        if effort:
+            payload["reasoning_effort"] = effort
+    else:
+        payload["max_tokens"] = 200
+        payload["temperature"] = 0.7
+
     try:
-        response = requests.post(f"{OPENROUTER_API_BASE}/chat/completions", headers=headers, json=payload, timeout=timeout)
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     except requests.RequestException as exc:
         raise PromptRewriteError(f"AI prompt rewrite request failed: {exc}") from exc
     if response.status_code != 200:
@@ -272,9 +308,10 @@ def rewrite_prompt(
                 aspect_ratio=aspect_ratio,
                 timeout=timeout,
             )
+        key_name = "OPENAI_API_KEY" if _rewrite_provider() == "openai" else "OPENROUTER_API_KEY"
         raise PromptRewriteError(
-            "AI prompt rewrite failed: the hermes CLI is not installed and OPENROUTER_API_KEY is not set. "
-            "Set OPENROUTER_API_KEY (recommended for serverless) or install the hermes CLI."
+            f"AI prompt rewrite failed: the hermes CLI is not installed and {key_name} is not set. "
+            f"Set {key_name} (recommended for serverless) or install the hermes CLI."
         ) from exc
     except Exception as exc:
         raise PromptRewriteError(f"AI prompt rewrite failed: {exc}") from exc
