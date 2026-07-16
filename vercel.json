@@ -8,20 +8,10 @@
         "maxDuration": 60,
         "buildCommand": "pip install -r requirements.txt"
       }
-    },
-    {
-      "src": "static/**",
-      "use": "@vercel/static",
-      "config": {
-        "buildCommand": "cp -r static/* .vercel/output/static/ && ls -la .vercel/output/static/"
-      }
     }
   ],
+  "includeFiles": ["static/**"],
   "routes": [
-    {
-      "src": "/static/(.*)",
-      "dest": "/static/$1"
-    },
     {
       "src": "/(.*)",
       "dest": "/app.py"
