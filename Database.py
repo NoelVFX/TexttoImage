@@ -83,6 +83,21 @@ def store_image_in_gridfs(db, image_bytes: bytes, filename: str, content_type: s
     return str(file_id)
 
 
+def get_image_file_from_gridfs(db, file_id: str, bucket_name: str = "generated_images") -> tuple[bytes, str, str] | None:
+    """Retrieve (bytes, content_type, filename) from GridFS by file ID, or None if missing."""
+    try:
+        fs = get_gridfs_bucket(db, bucket_name)
+        from bson import ObjectId
+        gridout = fs.get(ObjectId(file_id))
+        content_type = gridout.content_type or "image/png"
+        filename = gridout.filename or f"{file_id}.png"
+        return gridout.read(), content_type, filename
+    except NoFile:
+        return None
+    except Exception:
+        return None
+
+
 def get_image_from_gridfs(db, file_id: str, bucket_name: str = "generated_images") -> bytes | None:
     """Retrieve image bytes from GridFS by file ID."""
     try:

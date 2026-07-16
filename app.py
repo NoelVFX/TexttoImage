@@ -40,7 +40,7 @@ from AuthService import (
     verify_reset_token,
 )
 from urllib.parse import quote
-from Database import get_database, get_gridfs_bucket, store_image_in_gridfs, get_image_from_gridfs, delete_image_from_gridfs
+from Database import get_database, get_gridfs_bucket, store_image_in_gridfs, get_image_file_from_gridfs, delete_image_from_gridfs
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
 from ImageEdit import (
@@ -252,6 +252,19 @@ def stable_generation_seed(prompt: str, aspect_ratio: str) -> int:
     return int(digest[:8], 16)
 
 
+GRIDFS_URL_PREFIX = "/api/images/gridfs/"
+
+
+def gridfs_file_id_from_url(image_url: str) -> str | None:
+    """Extract the GridFS file id from an app-served image URL (relative or absolute)."""
+    parsed = urlparse(image_url)
+    path = unquote(parsed.path if parsed.scheme else image_url)
+    if not path.startswith(GRIDFS_URL_PREFIX):
+        return None
+    file_id = Path(path.removeprefix(GRIDFS_URL_PREFIX)).name
+    return file_id or None
+
+
 def local_generated_file_from_url(image_url: str) -> Path | None:
     parsed = urlparse(image_url)
     path = unquote(parsed.path if parsed.scheme else image_url)
@@ -268,6 +281,18 @@ def local_generated_file_from_url(image_url: str) -> Path | None:
 
 
 def download_image_bytes(image_url: str, *, timeout: int = 45) -> tuple[bytes, str]:
+    # GridFS-served images (e.g. /api/images/gridfs/<id>): read straight from the
+    # database instead of HTTP — relative URLs aren't fetchable and self-requests
+    # would burn a second serverless invocation on Vercel.
+    gridfs_id = gridfs_file_id_from_url(image_url)
+    if gridfs_id is not None:
+        if APP_DB is None:
+            raise ImageEditError("Image storage is not available (database not configured).")
+        stored = get_image_file_from_gridfs(APP_DB, gridfs_id)
+        if stored is None:
+            raise ImageEditError(f"Generated image not found in storage: {gridfs_id}")
+        image_bytes, content_type, _filename = stored
+        return image_bytes, content_type
     local_path = local_generated_file_from_url(image_url)
     if local_path is not None:
         if not local_path.exists():
@@ -287,31 +312,15 @@ def materialize_masked_region_edit(edit_payload: dict) -> str:
     patch_bytes, _patch_type = download_image_bytes(edit_payload["patch_url"])
     edited_bytes, _content_type = composite_masked_patch(original_bytes, patch_bytes, edit_payload["mask"])
 
-    digest = hashlib.sha256(
-        f"{edit_payload['image_url']}|{edit_payload['patch_url']}|{edit_payload['mask']}".encode("utf-8")
-    ).hexdigest()[:16]
-    filename = f"masked-edit-{digest}.png"
-    output_path = GENERATED_DIR / filename
-    output_path.write_bytes(edited_bytes)
-    return public_generated_url(filename)
+    digest_input = f"{edit_payload['image_url']}|{edit_payload['patch_url']}|{edit_payload['mask']}"
+    return write_generated_bytes("masked-edit", digest_input, edited_bytes)
 
 
 def materialize_color_recolor_edit(image_url: str, mask: dict, target_rgb: tuple[int, int, int], target_name: str) -> str:
     original_bytes, _original_type = download_image_bytes(image_url)
     edited_bytes, _content_type = recolor_masked_region(original_bytes, mask, target_rgb)
-    digest = hashlib.sha256(f"{image_url}|{mask}|{target_name}|color-recolor".encode("utf-8")).hexdigest()[:16]
-    filename = f"masked-recolor-{digest}.png"
-    output_path = GENERATED_DIR / filename
-    output_path.write_bytes(edited_bytes)
-    return public_generated_url(filename)
-
-
-def write_generated_bytes_gridfs(db, filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png", bucket_name: str = "generated_images") -> str:
-    """Store image bytes in GridFS and return a URL to serve it."""
-    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
-    filename = f"{filename_prefix}-{digest}{suffix}"
-    file_id = store_image_in_gridfs(db, content, filename, content_type=f"image/{suffix.lstrip('.')}", bucket_name=bucket_name)
-    return f"/api/images/gridfs/{file_id}"
+    digest_input = f"{image_url}|{mask}|{target_name}|color-recolor"
+    return write_generated_bytes("masked-recolor", digest_input, edited_bytes)
 
 
 def write_generated_bytes(filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png") -> str:
@@ -327,7 +336,8 @@ def write_generated_bytes(filename_prefix: str, digest_input: str, content: byte
         except Exception as e:
             app.logger.warning(f"GridFS storage failed, falling back to local: {e}")
     
-    # Fallback to local filesystem
+    # Fallback to local filesystem (local dev without MongoDB)
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / filename
     output_path.write_bytes(content)
     return public_generated_url(filename)
@@ -416,40 +426,24 @@ def selected_inpaint_provider() -> str:
     return provider or "openai"
 
 
-def public_generated_url(filename: str) -> str:
-    public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
-    path = f"/static/generated/{filename}"
-    if has_request_context():
-        path = url_for("static", filename=f"generated/{filename}")
-    if public_base_url:
-        return f"{public_base_url}{path}"
-    if not has_request_context():
-        return path
-    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
-    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
-    if forwarded_host:
-        scheme = forwarded_proto or request.scheme
-        return f"{scheme}://{forwarded_host}{path}"
-    return url_for("static", filename=f"generated/{filename}", _external=True)
-
-
 @app.get("/api/images/gridfs/<file_id>")
 def serve_gridfs_image(file_id: str):
     """Serve an image from GridFS by file ID."""
     if APP_DB is None:
         return jsonify({"error": "Database not configured"}), 503
-    
-    image_bytes = get_image_from_gridfs(APP_DB, file_id)
-    if image_bytes is None:
+
+    stored = get_image_file_from_gridfs(APP_DB, file_id)
+    if stored is None:
         return jsonify({"error": "Image not found"}), 404
-    
-    # Determine content type from file extension or default to PNG
-    content_type = "image/png"
-    
-    return Response(image_bytes, mimetype=content_type, headers={
+    image_bytes, content_type, filename = stored
+
+    headers = {
         "Cache-Control": "public, max-age=31536000",  # 1 year cache
-        "Content-Length": str(len(image_bytes))
-    })
+        "Content-Length": str(len(image_bytes)),
+    }
+    if request.args.get("download"):
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return Response(image_bytes, mimetype=content_type, headers=headers)
 
 
 def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts: int | None = None) -> str:
@@ -487,7 +481,8 @@ def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts:
                 except Exception:
                     pass  # Fall back to local filesystem
             
-            # Fallback to local filesystem
+            # Fallback to local filesystem (local dev without MongoDB)
+            GENERATED_DIR.mkdir(parents=True, exist_ok=True)
             output_path = GENERATED_DIR / filename
             output_path.write_bytes(response.content)
             return public_generated_url(filename)
