@@ -355,8 +355,9 @@ def materialize_flux_inpaint_edit(image_url: str, mask: dict, micro_prompt: str,
         model_choice=DEFAULT_MODEL,
     )["patch_prompt"]
     flux_image_url = apply_flux_inpaint(
-        image_url=original_image_url,
-        mask_url=mask_url,
+        # fal.ai downloads these itself — relative GridFS URLs must be absolute.
+        image_url=public_absolute_url(original_image_url),
+        mask_url=public_absolute_url(mask_url),
         prompt=prompt,
         image_size=os.getenv("FAL_INPAINT_IMAGE_SIZE") or None,
     )
@@ -396,6 +397,35 @@ def materialize_openai_image_edit(image_url: str, mask: dict, micro_prompt: str,
         "edited_image_url": edited_image_url,
         "inpaint_prompt": prompt,
     }
+
+
+def public_absolute_url(url: str) -> str:
+    """Make an app-relative URL absolute so EXTERNAL services can fetch it.
+
+    OpenRouter (video frame references) and fal.ai (inpaint sources/masks) must
+    download the image themselves, so relative app URLs like
+    /api/images/gridfs/<id> are rejected ("Invalid URL format"). Absolute URLs
+    pass through unchanged.
+    """
+    url = (url or "").strip()
+    if not url.startswith("/") or url.startswith("//"):
+        return url
+    public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    if public_base_url:
+        if not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"https://{public_base_url}"
+        return f"{public_base_url}{url}"
+    if has_request_context():
+        forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+        forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+        if forwarded_host:
+            scheme = forwarded_proto or request.scheme
+            return f"{scheme}://{forwarded_host}{url}"
+        return f"{request.host_url.rstrip('/')}{url}"
+    vercel_host = (os.getenv("VERCEL_URL") or "").strip().rstrip("/")
+    if vercel_host:
+        return f"https://{vercel_host}{url}"
+    return url
 
 
 def public_generated_url(filename: str) -> str:
@@ -1563,7 +1593,9 @@ def start_video_generation():
             duration=DEFAULT_VIDEO_DURATION,
             resolution=DEFAULT_VIDEO_RESOLUTION,
             generate_audio=generate_audio,
-            first_frame_url=first_frame.start_frame_url,
+            # OpenRouter fetches this itself: app-relative URLs (GridFS-served
+            # frames) must become absolute or it 400s with "Invalid URL format".
+            first_frame_url=public_absolute_url(first_frame.start_frame_url),
             timeout=max(5, int(os.environ.get("VIDEO_SUBMIT_TIMEOUT", "8"))),
         )
     except (OpenRouterVideoError, ValueError) as exc:
