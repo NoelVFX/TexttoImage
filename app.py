@@ -97,7 +97,10 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "de
 # --- Session Store (Flask-Session) ---
 # Use filesystem sessions everywhere - works on Vercel, Railway, and local
 app.config["SESSION_TYPE"] = "filesystem"
-app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
+# Vercel: use /tmp which is writable; fallback to current dir for local
+import tempfile
+session_dir = os.path.join(tempfile.gettempdir(), "flask_sessions")
+app.config["SESSION_FILE_DIR"] = session_dir
 app.config["SESSION_FILE_THRESHOLD"] = 500
 app.config["SESSION_FILE_MODE"] = 384  # 0o600
 
