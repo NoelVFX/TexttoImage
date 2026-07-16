@@ -384,11 +384,28 @@ def reset_password(db, email: str, token: str, new_password: str) -> tuple[bool,
     if not user:
         return False, "Invalid or expired reset token."
 
+    old_hash = user.get("password_hash", "")
+    if old_hash and check_password_hash(old_hash, new_password):
+        return False, "New password must be different from current password."
+
     password_hash = generate_password_hash(new_password)
-    db["users"].update_one(
+    print(f"[DEBUG] Updating password hash for user_id={user['_id']}, new_hash_prefix={password_hash[:20]}...")
+    result = db["users"].update_one(
         {"_id": user["_id"]},
         {"$set": {"password_hash": password_hash, "updated_at": utc_now()}},
     )
+    print(f"[DEBUG] Update result: matched={result.matched_count}, modified={result.modified_count}")
+
+    if result.matched_count == 0:
+        return False, "User not found during password update."
+    if result.modified_count == 0:
+        return False, "Password hash was not updated (possibly same as current)."
+
+    # Verify the update persisted by reading back
+    updated_user = db["users"].find_one({"_id": user["_id"]}, {"password_hash": 1})
+    if not updated_user or not check_password_hash(updated_user.get("password_hash", ""), new_password):
+        return False, "Password update failed verification."
+
     clear_reset_token(db, user["_id"])
     return True, None
 

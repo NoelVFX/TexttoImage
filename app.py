@@ -39,6 +39,7 @@ from AuthService import (
     upsert_google_user,
     verify_reset_token,
 )
+from urllib.parse import quote
 from Database import get_database
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
@@ -518,7 +519,8 @@ def forgot_password():
                 public_base = f"{scheme}://{forwarded_host}"
         if not public_base:
             public_base = request.host_url.rstrip("/")
-        reset_link = f"{public_base}/auth/reset-password?token={token}&email={email}"
+        # URL-encode the email parameter to handle special characters
+        reset_link = f"{public_base}/auth/reset-password?token={token}&email={quote(email)}"
         
         print(f"[DEBUG] Sending reset email to {email} with link {reset_link}")
         success, error = send_password_reset_email(email, reset_link, display_name)
@@ -548,6 +550,8 @@ def reset_password_route():
     token = (payload.get("token") or "").strip()
     new_password = payload.get("password", "")
 
+    print(f"[DEBUG] Reset password attempt for email: {email}")
+
     if not email or "@" not in email:
         return jsonify({"error": "A valid email is required."}), 400
     if not token:
@@ -558,13 +562,18 @@ def reset_password_route():
     # Verify the token matches the email
     user = verify_reset_token(db, email, token)
     if not user:
+        print(f"[DEBUG] Token verification failed for email: {email}")
         return jsonify({"error": "Invalid or expired reset token."}), 400
+
+    print(f"[DEBUG] Token verified for user: {user.get('email')}, resetting password...")
 
     # Reset the password
     success, error = reset_password(db, email, token, new_password)
     if not success:
+        print(f"[DEBUG] Password reset failed: {error}")
         return jsonify({"error": error or "Failed to reset password."}), 400
 
+    print(f"[DEBUG] Password reset successful for: {email}")
     return jsonify({"ok": True, "message": "Password has been reset. You can now log in."})
 
 
