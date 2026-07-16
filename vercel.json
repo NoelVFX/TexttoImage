@@ -2,14 +2,15 @@
   "version": 2,
   "builds": [
     {
-      "src": "static/**",
+      "src": "public/**",
       "use": "@vercel/static"
     },
     {
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
-        "maxDuration": 60
+        "maxDuration": 60,
+        "buildCommand": "bash vercel-build.sh"
       }
     }
   ],
