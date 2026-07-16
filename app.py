@@ -90,6 +90,50 @@ if APP_DB is not None:
     except Exception:
         app.logger.exception("Failed to create MongoDB auth indexes")
 
+
+@app.cli.command("migrate-gridfs")
+def migrate_gridfs_command():
+    """Migrate existing local generated images to GridFS."""
+    from Database import store_image_in_gridfs
+    from pathlib import Path
+    
+    gen_dir = Path("static/generated")
+    if not gen_dir.exists():
+        print("No static/generated directory found")
+        return
+    
+    files = list(gen_dir.glob("*"))
+    if not files:
+        print("No files to migrate")
+        return
+    
+    print(f"Found {len(files)} file(s) in {gen_dir}")
+    
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    
+    migrated = 0
+    for f in files:
+        if not f.is_file():
+            continue
+        try:
+            content = f.read_bytes()
+            ext = f.suffix.lower()
+            content_type = content_types.get(ext, "image/png")
+            file_id = store_image_in_gridfs(APP_DB, content, f.name, content_type=content_type)
+            size_kb = len(content) / 1024
+            print(f"✅ {f.name} ({size_kb:.1f} KB) -> {file_id}")
+            migrated += 1
+        except Exception as e:
+            print(f"❌ {f.name}: {e}")
+    
+    print(f"\nMigrated {migrated}/{len(files)} files to GridFS")
+
 IMAGE_EDIT_JOBS: dict[str, dict] = {}
 IMAGE_EDIT_JOBS_LOCK = threading.Lock()
 IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
