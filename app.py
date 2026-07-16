@@ -336,31 +336,6 @@ def public_generated_url(filename: str) -> str:
     return url_for("static", filename=f"generated/{filename}", _external=True)
 
 
-@app.get("/api/images/gridfs/<file_id>")
-def serve_gridfs_image(file_id: str):
-    """Serve image from GridFS by file ID."""
-    db = APP_DB
-    if db is None:
-        return jsonify({"error": "Database not configured"}), 503
-    
-    try:
-        from bson import ObjectId
-        image_bytes = get_image_from_gridfs(db, file_id)
-        if image_bytes is None:
-            return jsonify({"error": "Image not found"}), 404
-        
-        # Get content type from GridFS metadata
-        fs = get_gridfs_bucket(db)
-        gridout = fs.get(ObjectId(file_id))
-        content_type = gridout.content_type or "image/png"
-        
-        from flask import Response
-        return Response(image_bytes, mimetype=content_type)
-    except Exception as e:
-        app.logger.exception("Error serving GridFS image")
-        return jsonify({"error": "Failed to serve image"}), 500
-
-
 def selected_inpaint_provider() -> str:
     provider = os.getenv("INPAINT_PROVIDER", "openai").strip().lower()
     return provider or "openai"
