@@ -157,3 +157,4 @@ git push -u origin main
 - `static/generated/` - Runtime generated images, ignored by git
 - `Procfile` and `railway.json` - deployment start commands
 - `test_orchestrated_video.py` - regression tests for the vision-gated I2V workflow
+# rebuild trigger
