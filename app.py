@@ -71,7 +71,7 @@ from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinatio
 
 # Vercel: serverless-compatible job storage using MongoDB
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -95,23 +95,17 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 app.config["PREFERRED_URL_SCHEME"] = os.getenv("PREFERRED_URL_SCHEME", "https")
 app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
 
-# --- Session Store (Flask-Session) ---
-# Use filesystem sessions everywhere - works on Vercel, Railway, and local
-app.config["SESSION_TYPE"] = "filesystem"
-# Vercel: use /tmp which is writable; fallback to current dir for local
-import tempfile
-session_dir = os.path.join(tempfile.gettempdir(), "flask_sessions")
-app.config["SESSION_FILE_DIR"] = session_dir
-app.config["SESSION_FILE_THRESHOLD"] = 500
-app.config["SESSION_FILE_MODE"] = 384  # 0o600
-
-app.config["SESSION_PERMANENT"] = False
-app.config["SESSION_USE_SIGNER"] = True
-app.config["SESSION_KEY_PREFIX"] = "tti:session:"
-
-# Initialize Flask-Session
-from flask_session import Session
-Session(app)
+# --- Sessions: signed cookies (stateless) ---
+# The session only ever holds the user id (plus a transient OAuth state), so it
+# fits in Flask's default signed cookie. Do NOT use server-side session files:
+# on Vercel every serverless instance has its own /tmp, so a request landing on
+# a different instance found no session file and looked logged-out (this was
+# the "clicking Billing logs me out" bug).
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Secure cookies require HTTPS; set FLASK_DEBUG=1 for plain-HTTP local dev.
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("FLASK_DEBUG") != "1"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=int(os.getenv("SESSION_LIFETIME_DAYS", "30")))
 
 # Initialize MongoDB lazily (don't crash on import if MongoDB unavailable)
 APP_DB = None
@@ -565,6 +559,12 @@ def current_user():
     return get_user_by_id(db, user_id)
 
 
+def establish_session(user: dict) -> None:
+    """Log the user in with a durable signed-cookie session (survives serverless instances)."""
+    session.permanent = True
+    session["user_id"] = str(user.get("_id"))
+
+
 @app.post("/auth/register")
 def register_user():
     db, error_response = require_db()
@@ -582,7 +582,7 @@ def register_user():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": "Could not create user. The email may already be registered.", "detail": str(exc)}), 409
-    session["user_id"] = str(user.get("_id"))
+    establish_session(user)
     return jsonify({"user": serialize_user(user)}), 201
 
 
@@ -595,7 +595,7 @@ def login_user():
     user = authenticate_user(db, payload.get("email", ""), payload.get("password", ""))
     if not user:
         return jsonify({"error": "Invalid email or password."}), 401
-    session["user_id"] = str(user.get("_id"))
+    establish_session(user)
     return jsonify({"user": serialize_user(user)})
 
 
@@ -1062,7 +1062,7 @@ def auth_google_callback():
         picture_url=profile.get("picture"),
     )
     session.pop("google_oauth_state", None)
-    session["user_id"] = str(user.get("_id"))
+    establish_session(user)
     return redirect("/")
 
 
