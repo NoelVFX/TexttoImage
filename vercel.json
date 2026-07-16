@@ -11,7 +11,10 @@
     },
     {
       "src": "static/**",
-      "use": "@vercel/static"
+      "use": "@vercel/static",
+      "config": {
+        "buildCommand": "cp -r static/* .vercel/output/static/ && ls -la .vercel/output/static/"
+      }
     }
   ],
   "routes": [
