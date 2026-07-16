@@ -158,3 +158,4 @@ git push -u origin main
 - `Procfile` and `railway.json` - deployment start commands
 - `test_orchestrated_video.py` - regression tests for the vision-gated I2V workflow
 # rebuild trigger
+# force rebuild Thu Jul 16 19:51:24 HKT 2026
