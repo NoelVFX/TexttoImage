@@ -9,6 +9,7 @@
       }
     }
   ],
+  "includeFiles": ["public/**"],
   "routes": [
     {
       "src": "/(.*)",
