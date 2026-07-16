@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -100,7 +101,7 @@ def build_prompt_rewrite_command(
     _load_project_env()
     provider = provider or os.getenv("PROMPT_REWRITE_PROVIDER") or DEFAULT_PROMPT_REWRITE_PROVIDER
     model = model or os.getenv("PROMPT_REWRITE_MODEL") or DEFAULT_PROMPT_REWRITE_MODEL
-    command = [hermes_command or os.getenv("HERMES_COMMAND", "hermes"), "chat", "-Q"]
+    command = [*_hermes_base_command(hermes_command), "chat", "-Q"]
     if provider:
         command.extend(["--provider", provider])
     if model:
@@ -149,9 +150,19 @@ def _api_key_available() -> bool:
     return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
-def _hermes_cli_available() -> bool:
+def _hermes_base_command(hermes_command: str | None = None) -> list[str]:
+    """HERMES_COMMAND as an argv prefix. Supports multi-token values so the
+    Windows-hosted app can call a WSL-installed agent: HERMES_COMMAND=wsl -e hermes.
+    A plain path without spaces is kept as a single token (Windows backslashes safe)."""
     _load_project_env()
-    return shutil.which(os.getenv("HERMES_COMMAND", "hermes")) is not None
+    raw = (hermes_command or os.getenv("HERMES_COMMAND", "hermes")).strip() or "hermes"
+    if " " not in raw:
+        return [raw]
+    return shlex.split(raw)
+
+
+def _hermes_cli_available() -> bool:
+    return shutil.which(_hermes_base_command()[0]) is not None
 
 
 def _use_direct_api() -> bool:
