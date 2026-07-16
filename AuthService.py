@@ -449,20 +449,34 @@ def send_password_reset_email(email: str, reset_link: str, display_name: str | N
 </body>
 </html>"""
 
-    try:
-        print(f"[DEBUG] Sending reset email via Resend to {email}")
-        response = requests.post(
+    def _post_email(sender: str) -> requests.Response:
+        return requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
-                "from": f"{from_name} <{from_email}>",
+                "from": f"{from_name} <{sender}>",
                 "to": [email],
                 "subject": subject,
                 "html": html,
             },
             timeout=15,
         )
+
+    try:
+        print(f"[DEBUG] Sending reset email via Resend to {email} from {from_email}")
+        response = _post_email(from_email)
         print(f"[DEBUG] Resend response: {response.status_code} {response.text[:200]}")
+        if (
+            response.status_code == 403
+            and "verif" in response.text.lower()
+            and from_email != "onboarding@resend.dev"
+        ):
+            # RESEND_FROM_EMAIL points at a domain Resend can't send from
+            # (e.g. a gmail address). Retry with Resend's shared test sender
+            # so password resets don't fail silently on misconfiguration.
+            print("[DEBUG] Sender domain not verified; retrying from onboarding@resend.dev")
+            response = _post_email("onboarding@resend.dev")
+            print(f"[DEBUG] Resend retry response: {response.status_code} {response.text[:200]}")
         if response.status_code >= 400:
             return False, f"Resend API error: {response.status_code} {response.text[:200]}"
         print("[DEBUG] Reset email sent successfully via Resend")
