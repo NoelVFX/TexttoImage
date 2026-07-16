@@ -85,6 +85,7 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 @app.route('/static/<path:filename>')
 def serve_static(filename):
     return send_from_directory(app.static_folder, filename)
+
 # Railway and similar platforms terminate HTTPS at a reverse proxy before
 # forwarding traffic to gunicorn over HTTP. ProxyFix makes Flask honor
 # X-Forwarded-Proto/Host so url_for(..., _external=True) builds the same
@@ -112,14 +113,15 @@ app.config["SESSION_KEY_PREFIX"] = "tti:session:"
 from flask_session import Session
 Session(app)
 
-APP_DB = get_database()
-if APP_DB is not None:
-    try:
+# Initialize MongoDB lazily (don't crash on import if MongoDB unavailable)
+APP_DB = None
+try:
+    APP_DB = get_database()
+    if APP_DB is not None:
         ensure_auth_indexes(APP_DB)
-        # Create TTL index for job cleanup (jobs older than 24h)
         APP_DB["jobs"].create_index("created_at", expireAfterSeconds=86400)
-    except Exception:
-        app.logger.exception("Failed to create MongoDB auth indexes")
+except Exception:
+    app.logger.exception("Failed to initialize MongoDB (continuing without DB)")
 
 # Serve static files directly (works on Vercel where static file serving is limited)
 @app.route("/static/<path:filename>")
