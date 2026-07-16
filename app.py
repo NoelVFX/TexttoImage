@@ -83,6 +83,19 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 app.config["PREFERRED_URL_SCHEME"] = os.getenv("PREFERRED_URL_SCHEME", "https")
 app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
 
+# --- MongoDB Session Store (Flask-Session) ---
+# Uses the same MongoDB database for session persistence across serverless cold starts
+app.config["SESSION_TYPE"] = "mongodb"
+app.config["SESSION_MONGODB"] = get_database()
+app.config["SESSION_MONGODB_COLLECT"] = "sessions"
+app.config["SESSION_PERMANENT"] = False
+app.config["SESSION_USE_SIGNER"] = True
+app.config["SESSION_KEY_PREFIX"] = "tti:session:"
+
+# Initialize Flask-Session
+from flask_session import Session
+Session(app)
+
 APP_DB = get_database()
 if APP_DB is not None:
     try:
