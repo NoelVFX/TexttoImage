@@ -2,15 +2,12 @@
   "version": 2,
   "builds": [
     {
-      "src": "static/**",
-      "use": "@vercel/static"
-    },
-    {
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt"
+        "buildCommand": "pip install -r requirements.txt",
+        "outputDirectory": "."
       }
     }
   ],
