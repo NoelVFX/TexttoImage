@@ -118,6 +118,11 @@ if APP_DB is not None:
     except Exception:
         app.logger.exception("Failed to create MongoDB auth indexes")
 
+# Serve static files directly (works on Vercel where static file serving is limited)
+@app.route("/static/<path:filename>")
+def serve_static(filename):
+    return send_from_directory("static", filename)
+
 
 # --- Serverless-compatible job storage (MongoDB) ---
 # Replaces in-memory IMAGE_EDIT_JOBS and VIDEO_GENERATION_JOBS
