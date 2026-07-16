@@ -69,6 +69,11 @@ from PromptRewrite import PromptRewriteError, rewrite_prompt
 from Storyboard import build_storyboard_frames, regenerate_storyboard_frame
 from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url, _is_pollinations_queue_or_rate_limit
 
+# Vercel: serverless-compatible job storage using MongoDB
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+import json
+
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
@@ -100,58 +105,59 @@ APP_DB = get_database()
 if APP_DB is not None:
     try:
         ensure_auth_indexes(APP_DB)
+        # Create TTL index for job cleanup (jobs older than 24h)
+        APP_DB["jobs"].create_index("created_at", expireAfterSeconds=86400)
     except Exception:
         app.logger.exception("Failed to create MongoDB auth indexes")
 
 
-@app.cli.command("migrate-gridfs")
-def migrate_gridfs_command():
-    """Migrate existing local generated images to GridFS."""
-    from Database import store_image_in_gridfs
-    from pathlib import Path
-    
-    gen_dir = Path("static/generated")
-    if not gen_dir.exists():
-        print("No static/generated directory found")
-        return
-    
-    files = list(gen_dir.glob("*"))
-    if not files:
-        print("No files to migrate")
-        return
-    
-    print(f"Found {len(files)} file(s) in {gen_dir}")
-    
-    content_types = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }
-    
-    migrated = 0
-    for f in files:
-        if not f.is_file():
-            continue
-        try:
-            content = f.read_bytes()
-            ext = f.suffix.lower()
-            content_type = content_types.get(ext, "image/png")
-            file_id = store_image_in_gridfs(APP_DB, content, f.name, content_type=content_type)
-            size_kb = len(content) / 1024
-            print(f"✅ {f.name} ({size_kb:.1f} KB) -> {file_id}")
-            migrated += 1
-        except Exception as e:
-            print(f"❌ {f.name}: {e}")
-    
-    print(f"\nMigrated {migrated}/{len(files)} files to GridFS")
+# --- Serverless-compatible job storage (MongoDB) ---
+# Replaces in-memory IMAGE_EDIT_JOBS and VIDEO_GENERATION_JOBS
+# Each job is a document in MongoDB with TTL index for auto-cleanup
 
-IMAGE_EDIT_JOBS: dict[str, dict] = {}
-IMAGE_EDIT_JOBS_LOCK = threading.Lock()
-IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
-VIDEO_GENERATION_JOBS: dict[str, dict] = {}
-VIDEO_GENERATION_JOBS_LOCK = threading.Lock()
+JOB_COLLECTION = "jobs"
+
+def _get_jobs_collection():
+    """Get the jobs collection, creating it if needed."""
+    if APP_DB is None:
+        return None
+    return APP_DB[JOB_COLLECTION]
+
+def save_job(job_id: str, job_type: str, status: str, result: dict | None = None, error: str | None = None, **kwargs) -> None:
+    """Save or update a job in MongoDB."""
+    col = _get_jobs_collection()
+    if col is None:
+        return
+    doc = {
+        "_id": job_id,
+        "job_type": job_type,
+        "status": status,
+        "result": result,
+        "error": error,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    doc.update(kwargs)
+    col.update_one({"_id": job_id}, {"$set": doc}, upsert=True)
+
+def get_job(job_id: str) -> dict | None:
+    """Retrieve a job from MongoDB."""
+    col = _get_jobs_collection()
+    if col is None:
+        return None
+    return col.find_one({"_id": job_id})
+
+def prune_jobs(now: datetime | None = None) -> None:
+    """Prune old jobs (handled by TTL index, but kept for compatibility)."""
+    # TTL index on created_at handles this automatically
+    pass
+
+# Remove in-memory job storage (not serverless-compatible)
+# IMAGE_EDIT_JOBS: dict[str, dict] = {}
+# IMAGE_EDIT_JOBS_LOCK = threading.Lock()
+# IMAGE_EDIT_JOB_TTL_SECONDS = int(os.getenv("IMAGE_EDIT_JOB_TTL_SECONDS", "3600"))
+# VIDEO_GENERATION_JOBS: dict[str, dict] = {}
+# VIDEO_GENERATION_JOBS_LOCK = threading.Lock()
 
 VIDEO_START_FRAME_SIZES = {
     "16:9": (1280, 720),
@@ -1109,32 +1115,40 @@ def require_and_spend_credit(credit_type: str):
 
 
 def remember_video_job(job_id: str, metadata: dict) -> None:
-    with VIDEO_GENERATION_JOBS_LOCK:
-        VIDEO_GENERATION_JOBS[job_id] = {**metadata, "recorded": False, "created_at": time.time()}
+    """Store video job metadata in MongoDB."""
+    save_job(
+        job_id,
+        job_type="video_generation",
+        status="pending",
+        recorded=False,
+        **metadata,
+    )
 
 
 def record_completed_video_history(job_id: str, video_url: str | None) -> None:
     if not video_url:
         return
-    with VIDEO_GENERATION_JOBS_LOCK:
-        job_meta = VIDEO_GENERATION_JOBS.get(job_id)
-        if not job_meta or job_meta.get("recorded"):
-            return
-        VIDEO_GENERATION_JOBS[job_id]["recorded"] = True
+    job = get_job(job_id)
+    if not job or job.get("recorded"):
+        return
+    
+    # Mark as recorded
+    save_job(job_id, job_type="video_generation", status="completed", recorded=True, video_url=video_url, **job)
+    
     db = current_db()
-    if db is None or not job_meta.get("user_id"):
+    if db is None or not job.get("user_id"):
         return
     try:
         record_generation_history(
             db,
-            user_id=job_meta["user_id"],
+            user_id=job["user_id"],
             media_type="video",
-            prompt=job_meta.get("prompt") or "Generated video",
+            prompt=job.get("prompt") or "Generated video",
             result_url=video_url,
             metadata={
-                "optimized_prompt": job_meta.get("optimized_prompt"),
-                "aspect_ratio": job_meta.get("aspect_ratio"),
-                "model": job_meta.get("model"),
+                "optimized_prompt": job.get("optimized_prompt"),
+                "aspect_ratio": job.get("aspect_ratio"),
+                "model": job.get("model"),
                 "provider": "openrouter",
                 "job_id": job_id,
             },
@@ -1221,15 +1235,8 @@ def build_image_edit_payload(*, image_url: str, micro_prompt: str, mask: dict, c
 
 
 def prune_image_edit_jobs(now: float | None = None) -> None:
-    now = now or time.time()
-    with IMAGE_EDIT_JOBS_LOCK:
-        stale_ids = [
-            job_id
-            for job_id, job in IMAGE_EDIT_JOBS.items()
-            if now - float(job.get("created_at", now)) > IMAGE_EDIT_JOB_TTL_SECONDS
-        ]
-        for job_id in stale_ids:
-            IMAGE_EDIT_JOBS.pop(job_id, None)
+    # No-op: handled by MongoDB TTL index
+    pass
 
 
 def start_image_edit_job(
@@ -1240,22 +1247,21 @@ def start_image_edit_job(
     context_prompt: str | None = None,
     user_id: str | None = None,
 ) -> str:
-    prune_image_edit_jobs()
     job_id = f"edit_{uuid.uuid4().hex}"
-    with IMAGE_EDIT_JOBS_LOCK:
-        IMAGE_EDIT_JOBS[job_id] = {
-            "status": "queued",
-            "result": None,
-            "error": None,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
+    save_job(
+        job_id,
+        job_type="image_edit",
+        status="queued",
+        user_id=user_id,
+        image_url=image_url,
+        micro_prompt=micro_prompt,
+        mask=mask,
+        context_prompt=context_prompt,
+    )
 
     def worker() -> None:
-        with IMAGE_EDIT_JOBS_LOCK:
-            if job_id in IMAGE_EDIT_JOBS:
-                IMAGE_EDIT_JOBS[job_id]["status"] = "running"
-                IMAGE_EDIT_JOBS[job_id]["updated_at"] = time.time()
+        # Update status to running
+        save_job(job_id, job_type="image_edit", status="running", user_id=user_id)
         try:
             with app.app_context():
                 result = build_image_edit_payload(
@@ -1265,18 +1271,10 @@ def start_image_edit_job(
                     context_prompt=context_prompt,
                 )
                 record_masked_edit_history(user_id=user_id, edit_payload=result, context_prompt=context_prompt)
-            with IMAGE_EDIT_JOBS_LOCK:
-                if job_id in IMAGE_EDIT_JOBS:
-                    IMAGE_EDIT_JOBS[job_id].update(
-                        {"status": "completed", "result": result, "error": None, "updated_at": time.time()}
-                    )
+            save_job(job_id, job_type="image_edit", status="completed", result=result, user_id=user_id)
         except Exception as exc:
             app.logger.exception("Background masked image edit failed")
-            with IMAGE_EDIT_JOBS_LOCK:
-                if job_id in IMAGE_EDIT_JOBS:
-                    IMAGE_EDIT_JOBS[job_id].update(
-                        {"status": "failed", "result": None, "error": str(exc), "updated_at": time.time()}
-                    )
+            save_job(job_id, job_type="image_edit", status="failed", error=str(exc), user_id=user_id)
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
@@ -1344,19 +1342,17 @@ def edit_image_region():
 
 @app.get("/image/edit-region/status/<job_id>")
 def image_edit_region_status(job_id: str):
-    prune_image_edit_jobs()
-    with IMAGE_EDIT_JOBS_LOCK:
-        job = IMAGE_EDIT_JOBS.get(job_id)
-        if not job:
-            return jsonify({"error": "Image edit job not found."}), 404
-        payload = {
-            "job_id": job_id,
-            "status": job.get("status", "unknown"),
-            "result": job.get("result"),
-            "error": job.get("error"),
-            "created_at": job.get("created_at"),
-            "updated_at": job.get("updated_at"),
-        }
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Image edit job not found."}), 404
+    payload = {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+    }
     return jsonify(payload)
 
 
@@ -1654,6 +1650,17 @@ def video_content(job_id: str):
 @app.get("/download/<path:filename>")
 def download_image(filename: str):
     return send_from_directory(GENERATED_DIR, filename, as_attachment=True)
+
+
+@app.get("/api/cron/cleanup-jobs")
+def cron_cleanup_jobs():
+    """Cron endpoint to clean up old jobs (called by Vercel cron)."""
+    try:
+        prune_jobs()
+        return {"ok": True, "message": "Job cleanup completed"}
+    except Exception as e:
+        app.logger.exception("Cron job cleanup failed")
+        return {"ok": False, "error": str(e)}, 500
 
 
 @app.get("/health")
