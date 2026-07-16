@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "app.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxDuration": 60
+      }
     }
   ],
   "routes": [
@@ -16,11 +19,6 @@
       "dest": "/app.py"
     }
   ],
-  "functions": {
-    "app.py": {
-      "maxDuration": 60
-    }
-  },
   "env": {
     "PYTHON_VERSION": "3.11"
   },
