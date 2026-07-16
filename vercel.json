@@ -6,21 +6,20 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt && echo '=== DEPLOYED FILES ===' && find . -name '*.css' -o -name '*.js' -o -name '*.png' -o -name '*.jpg' | head -20"
+        "buildCommand": "pip install -r requirements.txt && cp -r static .vercel/output/static && echo '=== STATIC COPIED ===' && ls -la .vercel/output/static/"
       }
     }
   ],
   "routes": [
     {
       "src": "/static/(.*)",
-      "dest": "/app.py"
+      "dest": "/static/$1"
     },
     {
       "src": "/(.*)",
       "dest": "/app.py"
     }
   ],
-  "includeFiles": ["static/**"],
   "env": {
     "PYTHON_VERSION": "3.11"
   },
