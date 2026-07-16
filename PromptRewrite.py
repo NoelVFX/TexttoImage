@@ -6,7 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from OpenRouterVideo import load_local_env
+import requests
+
+from OpenRouterVideo import OPENROUTER_API_BASE, load_local_env, openrouter_headers
 
 
 DEFAULT_PROMPT_REWRITE_TIMEOUT = 30
@@ -141,6 +143,69 @@ def limit_prompt_words(text: str, max_words: int = DEFAULT_PROMPT_REWRITE_MAX_WO
     return shortened
 
 
+def _api_key_available() -> bool:
+    _load_project_env()
+    return bool(os.getenv("OPENROUTER_API_KEY"))
+
+
+def _use_direct_api() -> bool:
+    """Prefer the OpenRouter HTTP API over the hermes CLI when possible.
+
+    Serverless hosts (Vercel) have no hermes binary, so the CLI path fails with
+    "no such file or directory: hermes". Direct API is used when the provider is
+    OpenRouter and an API key is configured; set PROMPT_REWRITE_USE_CLI=1 to
+    force the CLI locally.
+    """
+    _load_project_env()
+    if os.getenv("PROMPT_REWRITE_USE_CLI") == "1":
+        return False
+    provider = (os.getenv("PROMPT_REWRITE_PROVIDER") or DEFAULT_PROMPT_REWRITE_PROVIDER).strip().lower()
+    return provider == "openrouter" and _api_key_available()
+
+
+def rewrite_prompt_via_api(
+    prompt: str,
+    *,
+    media_type: str,
+    aspect_ratio: str | None = None,
+    model: str | None = None,
+    timeout: int | None = None,
+) -> str:
+    """Rewrite the prompt by calling OpenRouter's chat API directly (no CLI needed)."""
+    _load_project_env()
+    model = model or os.getenv("PROMPT_REWRITE_MODEL") or DEFAULT_PROMPT_REWRITE_MODEL
+    timeout = timeout if timeout is not None else max(1, _env_int("PROMPT_REWRITE_TIMEOUT", DEFAULT_PROMPT_REWRITE_TIMEOUT))
+    try:
+        headers = openrouter_headers()
+    except Exception as exc:
+        raise PromptRewriteError(f"AI prompt rewrite is not configured: {exc}") from exc
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": build_prompt_rewrite_prompt(prompt, media_type=media_type, aspect_ratio=aspect_ratio),
+            }
+        ],
+        "max_tokens": 200,
+        "temperature": 0.7,
+    }
+    try:
+        response = requests.post(f"{OPENROUTER_API_BASE}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        raise PromptRewriteError(f"AI prompt rewrite request failed: {exc}") from exc
+    if response.status_code != 200:
+        raise PromptRewriteError(f"AI prompt rewrite returned HTTP {response.status_code}: {response.text[:300]}")
+    try:
+        raw = response.json()["choices"][0]["message"]["content"] or ""
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise PromptRewriteError(f"AI prompt rewrite returned an unexpected response: {response.text[:300]}") from exc
+    rewritten = limit_prompt_words(clean_rewritten_prompt(raw))
+    if not rewritten:
+        raise PromptRewriteError("AI prompt rewrite returned an empty prompt.")
+    return rewritten
+
+
 def rewrite_prompt(
     prompt: str,
     *,
@@ -153,6 +218,16 @@ def rewrite_prompt(
     if not cleaned_prompt:
         raise ValueError("Prompt is required.")
 
+    # Direct API path (default in serverless deployments). An injected runner
+    # means a caller/test wants the CLI path specifically, so respect it.
+    if runner is subprocess.run and _use_direct_api():
+        return rewrite_prompt_via_api(
+            cleaned_prompt,
+            media_type=media_type,
+            aspect_ratio=aspect_ratio,
+            timeout=timeout,
+        )
+
     timeout = timeout if timeout is not None else max(1, _env_int("PROMPT_REWRITE_TIMEOUT", DEFAULT_PROMPT_REWRITE_TIMEOUT))
     command = build_prompt_rewrite_command(
         cleaned_prompt,
@@ -163,6 +238,20 @@ def rewrite_prompt(
         result = runner(command, text=True, capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise PromptRewriteError(f"AI prompt rewrite timed out after {timeout} seconds.") from exc
+    except FileNotFoundError as exc:
+        # hermes CLI not installed (e.g. on Vercel): fall back to the HTTP API
+        # when a key is available instead of failing outright.
+        if _api_key_available():
+            return rewrite_prompt_via_api(
+                cleaned_prompt,
+                media_type=media_type,
+                aspect_ratio=aspect_ratio,
+                timeout=timeout,
+            )
+        raise PromptRewriteError(
+            "AI prompt rewrite failed: the hermes CLI is not installed and OPENROUTER_API_KEY is not set. "
+            "Set OPENROUTER_API_KEY (recommended for serverless) or install the hermes CLI."
+        ) from exc
     except Exception as exc:
         raise PromptRewriteError(f"AI prompt rewrite failed: {exc}") from exc
 
