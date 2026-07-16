@@ -11,10 +11,15 @@
   ],
   "routes": [
     {
+      "src": "/static/(.*)",
+      "dest": "/app.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "/app.py"
     }
   ],
+  "includeFiles": ["static/**"],
   "env": {
     "PYTHON_VERSION": "3.11"
   },
