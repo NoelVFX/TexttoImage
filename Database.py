@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from urllib.parse import quote_plus
-
+from gridfs import GridFS
+from gridfs.errors import NoFile
 
 def load_local_env(path: str | Path | None = None) -> None:
     env_path = Path(path) if path is not None else Path(__file__).resolve().parent / ".env"
@@ -55,3 +56,41 @@ def get_database():
     client = MongoClient(uri, serverSelectionTimeoutMS=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")))
     db_name = os.getenv("MONGODB_DB", "tti_app")
     return client[db_name]
+
+
+def get_gridfs_bucket(db, bucket_name: str = "generated_images"):
+    """Get a GridFS bucket for storing generated/edited images."""
+    return GridFS(db, collection=bucket_name)
+
+
+def store_image_in_gridfs(db, image_bytes: bytes, filename: str, content_type: str = "image/png", bucket_name: str = "generated_images", suffix: str = ".png") -> str:
+    """Store image bytes in GridFS and return the file ID."""
+    fs = get_gridfs_bucket(db, bucket_name)
+    file_id = fs.put(image_bytes, filename=filename, content_type=content_type)
+    return str(file_id)
+
+
+def get_image_from_gridfs(db, file_id: str, bucket_name: str = "generated_images") -> bytes | None:
+    """Retrieve image bytes from GridFS by file ID."""
+    try:
+        fs = get_gridfs_bucket(db, bucket_name)
+        from bson import ObjectId
+        gridout = fs.get(ObjectId(file_id))
+        return gridout.read()
+    except NoFile:
+        return None
+    except Exception:
+        return None
+
+
+def delete_image_from_gridfs(db, file_id: str, bucket_name: str = "generated_images") -> bool:
+    """Delete image from GridFS by file ID."""
+    try:
+        fs = get_gridfs_bucket(db, bucket_name)
+        from bson import ObjectId
+        fs.delete(ObjectId(file_id))
+        return True
+    except NoFile:
+        return False
+    except Exception:
+        return False

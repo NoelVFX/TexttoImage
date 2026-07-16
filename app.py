@@ -40,7 +40,7 @@ from AuthService import (
     verify_reset_token,
 )
 from urllib.parse import quote
-from Database import get_database
+from Database import get_database, get_gridfs_bucket, store_image_in_gridfs, get_image_from_gridfs, delete_image_from_gridfs
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
 from ImageEdit import (
@@ -231,9 +231,28 @@ def materialize_color_recolor_edit(image_url: str, mask: dict, target_rgb: tuple
     return public_generated_url(filename)
 
 
-def write_generated_bytes(filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png") -> str:
+def write_generated_bytes_gridfs(db, filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png", bucket_name: str = "generated_images") -> str:
+    """Store image bytes in GridFS and return a URL to serve it."""
     digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
     filename = f"{filename_prefix}-{digest}{suffix}"
+    file_id = store_image_in_gridfs(db, content, filename, content_type=f"image/{suffix.lstrip('.')}", bucket_name=bucket_name)
+    return f"/api/images/gridfs/{file_id}"
+
+
+def write_generated_bytes(filename_prefix: str, digest_input: str, content: bytes, suffix: str = ".png") -> str:
+    """Write image bytes to GridFS if DB available, otherwise local filesystem (fallback for local dev)."""
+    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+    filename = f"{filename_prefix}-{digest}{suffix}"
+    
+    # Try GridFS first if DB is available
+    if APP_DB is not None:
+        try:
+            file_id = store_image_in_gridfs(APP_DB, content, filename, content_type=f"image/{suffix.lstrip('.')}")
+            return f"/api/images/gridfs/{file_id}"
+        except Exception as e:
+            app.logger.warning(f"GridFS storage failed, falling back to local: {e}")
+    
+    # Fallback to local filesystem
     output_path = GENERATED_DIR / filename
     output_path.write_bytes(content)
     return public_generated_url(filename)
@@ -300,6 +319,48 @@ def materialize_openai_image_edit(image_url: str, mask: dict, micro_prompt: str,
     }
 
 
+def public_generated_url(filename: str) -> str:
+    public_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    path = f"/static/generated/{filename}"
+    if has_request_context():
+        path = url_for("static", filename=f"generated/{filename}")
+    if public_base_url:
+        return f"{public_base_url}{path}"
+    if not has_request_context():
+        return path
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+    if forwarded_host:
+        scheme = forwarded_proto or request.scheme
+        return f"{scheme}://{forwarded_host}{path}"
+    return url_for("static", filename=f"generated/{filename}", _external=True)
+
+
+@app.get("/api/images/gridfs/<file_id>")
+def serve_gridfs_image(file_id: str):
+    """Serve image from GridFS by file ID."""
+    db = APP_DB
+    if db is None:
+        return jsonify({"error": "Database not configured"}), 503
+    
+    try:
+        from bson import ObjectId
+        image_bytes = get_image_from_gridfs(db, file_id)
+        if image_bytes is None:
+            return jsonify({"error": "Image not found"}), 404
+        
+        # Get content type from GridFS metadata
+        fs = get_gridfs_bucket(db)
+        gridout = fs.get(ObjectId(file_id))
+        content_type = gridout.content_type or "image/png"
+        
+        from flask import Response
+        return Response(image_bytes, mimetype=content_type)
+    except Exception as e:
+        app.logger.exception("Error serving GridFS image")
+        return jsonify({"error": "Failed to serve image"}), 500
+
+
 def selected_inpaint_provider() -> str:
     provider = os.getenv("INPAINT_PROVIDER", "openai").strip().lower()
     return provider or "openai"
@@ -320,6 +381,25 @@ def public_generated_url(filename: str) -> str:
         scheme = forwarded_proto or request.scheme
         return f"{scheme}://{forwarded_host}{path}"
     return url_for("static", filename=f"generated/{filename}", _external=True)
+
+
+@app.get("/api/images/gridfs/<file_id>")
+def serve_gridfs_image(file_id: str):
+    """Serve an image from GridFS by file ID."""
+    if APP_DB is None:
+        return jsonify({"error": "Database not configured"}), 503
+    
+    image_bytes = get_image_from_gridfs(APP_DB, file_id)
+    if image_bytes is None:
+        return jsonify({"error": "Image not found"}), 404
+    
+    # Determine content type from file extension or default to PNG
+    content_type = "image/png"
+    
+    return Response(image_bytes, mimetype=content_type, headers={
+        "Cache-Control": "public, max-age=31536000",  # 1 year cache
+        "Content-Length": str(len(image_bytes))
+    })
 
 
 def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts: int | None = None) -> str:
@@ -348,6 +428,16 @@ def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts:
             suffix = STORYBOARD_IMAGE_EXTENSIONS.get(content_type, ".jpg")
             digest = hashlib.sha256(f"{frame.stage}|{frame.seed}|{frame.url}".encode("utf-8")).hexdigest()[:16]
             filename = f"storyboard-{frame.stage}-{digest}{suffix}"
+            
+            # Try GridFS first if MongoDB is available
+            if APP_DB is not None:
+                try:
+                    file_id = store_image_in_gridfs(APP_DB, response.content, filename, content_type=content_type)
+                    return f"/api/images/gridfs/{file_id}"
+                except Exception:
+                    pass  # Fall back to local filesystem
+            
+            # Fallback to local filesystem
             output_path = GENERATED_DIR / filename
             output_path.write_bytes(response.content)
             return public_generated_url(filename)
