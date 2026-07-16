@@ -76,20 +76,15 @@ import json
 
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
-from flask import Flask, send_from_directory
-import os
-
-app = Flask(__name__, static_folder='public', static_url_path='/static')
+# Default static handling: Flask serves /static/* from the static/ folder.
+# Do NOT register a custom /static route on top of this — a second view with
+# the same endpoint name makes Flask raise at import (crashes the Vercel function).
+app = Flask(__name__)
 
 # Health check endpoint
 @app.route("/health")
 def health():
     return {"status": "ok", "service": "textto-image"}
-
-# Explicitly serve static files for Vercel
-@app.route("/static/<path:filename>")
-def serve_static(filename):
-    return send_from_directory("public", filename)
 
 # Railway and similar platforms terminate HTTPS at a reverse proxy before
 # forwarding traffic to gunicorn over HTTP. ProxyFix makes Flask honor
@@ -127,13 +122,6 @@ try:
         APP_DB["jobs"].create_index("created_at", expireAfterSeconds=86400)
 except Exception:
     app.logger.exception("Failed to initialize MongoDB (continuing without DB)")
-
-# Serve static files directly (works on Vercel where static file serving is limited)
-@app.route("/static/<path:filename>")
-def serve_static(filename):
-    app.logger.info(f"Serving static file: {filename}")
-    return send_from_directory("static", filename)
-
 
 # --- Serverless-compatible job storage (MongoDB) ---
 # Replaces in-memory IMAGE_EDIT_JOBS and VIDEO_GENERATION_JOBS
@@ -1685,11 +1673,6 @@ def cron_cleanup_jobs():
     except Exception as e:
         app.logger.exception("Cron job cleanup failed")
         return {"ok": False, "error": str(e)}, 500
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
 
 
 if __name__ == "__main__":

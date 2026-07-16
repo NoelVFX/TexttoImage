@@ -14,18 +14,12 @@
     }
   ],
   "routes": [
-    {
-      "src": "/static/(.*)",
-      "dest": "/static/$1"
-    },
+    { "handle": "filesystem" },
     {
       "src": "/(.*)",
       "dest": "/app.py"
     }
   ],
-  "env": {
-    "PYTHON_VERSION": "3.11"
-  },
   "crons": [
     {
       "path": "/api/cron/cleanup-jobs",
