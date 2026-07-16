@@ -6,7 +6,7 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "pip install -r requirements.txt && mkdir -p .vercel/static && cp -r static/* .vercel/static/"
+        "buildCommand": "pip install -r requirements.txt && mkdir -p .vercel/static && cp -r static/* .vercel/static/ && ls -la .vercel/static/"
       }
     }
   ],
