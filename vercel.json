@@ -6,8 +6,9 @@
       "use": "@vercel/python",
       "config": {
         "maxDuration": 60,
-        "buildCommand": "bash vercel-build.sh"
-      }
+        "buildCommand": "pip install -r requirements.txt"
+      },
+      "includeFiles": ["static/**"]
     }
   ],
   "routes": [
