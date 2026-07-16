@@ -89,28 +89,11 @@ app.config["PREFERRED_URL_SCHEME"] = os.getenv("PREFERRED_URL_SCHEME", "https")
 app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-change-me"
 
 # --- Session Store (Flask-Session) ---
-# Vercel: use filesystem sessions (writable /tmp)
-# Railway/Local: use MongoDB sessions
-is_vercel = os.getenv("VERCEL") == "1"
-if is_vercel:
-    app.config["SESSION_TYPE"] = "filesystem"
-    app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
-    app.config["SESSION_FILE_THRESHOLD"] = 500
-    app.config["SESSION_FILE_MODE"] = 384  # 0o600
-else:
-    from Database import get_mongo_client
-    mongo_client = get_mongo_client()
-    if mongo_client is not None:
-        app.config["SESSION_TYPE"] = "mongodb"
-        app.config["SESSION_MONGODB_CLIENT"] = mongo_client
-        app.config["SESSION_MONGODB_DB"] = os.getenv("MONGODB_DB", "tti_app")
-        app.config["SESSION_MONGODB_COLLECT"] = "sessions"
-    else:
-        # Fallback to filesystem if MongoDB not configured
-        app.config["SESSION_TYPE"] = "filesystem"
-        app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
-        app.config["SESSION_FILE_THRESHOLD"] = 500
-        app.config["SESSION_FILE_MODE"] = 384
+# Use filesystem sessions everywhere - works on Vercel, Railway, and local
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["SESSION_FILE_DIR"] = "/tmp/flask_sessions"
+app.config["SESSION_FILE_THRESHOLD"] = 500
+app.config["SESSION_FILE_MODE"] = 384  # 0o600
 
 app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_USE_SIGNER"] = True
