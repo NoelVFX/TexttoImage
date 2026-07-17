@@ -1345,7 +1345,13 @@ def edit_image_region():
         return credit_error
 
     try:
-        run_async = parse_bool(os.getenv("IMAGE_EDIT_ASYNC", "true")) and not parse_bool(payload.get("sync"))
+        # Background threads die on serverless: Vercel freezes the function the
+        # moment the response is sent, so the async worker never runs and the
+        # job polls "queued/running" forever ("stuck on OpenAI API editing").
+        # Default to the synchronous path there (the edit completes within the
+        # function's 60s maxDuration); keep threads for local/long-lived hosts.
+        serverless = bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
+        run_async = parse_bool(os.getenv("IMAGE_EDIT_ASYNC", "false" if serverless else "true")) and not parse_bool(payload.get("sync"))
         if run_async:
             job_id = start_image_edit_job(
                 image_url=image_url,
