@@ -1169,8 +1169,16 @@ def record_completed_video_history(job_id: str, video_url: str | None) -> None:
     if not job or job.get("recorded"):
         return
     
-    # Mark as recorded
-    save_job(job_id, job_type="video_generation", status="completed", recorded=True, video_url=video_url, **job)
+    # Mark as recorded. Carry over only the metadata fields — spreading the whole
+    # stored document collides with save_job's named parameters (job_type/status/
+    # result/error) and tries to $set the immutable _id, which raised a TypeError
+    # and turned the status poll into an HTML 500 the moment a video completed.
+    metadata = {
+        k: v for k, v in job.items()
+        if k not in ("_id", "job_type", "status", "result", "error", "created_at", "updated_at")
+    }
+    metadata.update(recorded=True, video_url=video_url)
+    save_job(job_id, job_type="video_generation", status="completed", **metadata)
     
     db = current_db()
     if db is None or not job.get("user_id"):
@@ -1662,7 +1670,12 @@ def video_generation_status(job_id: str):
     ):
         video_url = url_for("video_content", job_id=job_id_for_response)
     if status == "completed":
-        record_completed_video_history(str(job_id_for_response), video_url)
+        # History recording is best-effort — it must never turn the status
+        # poll into a non-JSON 500 (the video itself is already done).
+        try:
+            record_completed_video_history(str(job_id_for_response), video_url)
+        except Exception:
+            app.logger.exception("Failed to record completed video history")
     return jsonify(
         {
             "id": job_id_for_response,
