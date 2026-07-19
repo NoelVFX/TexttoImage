@@ -40,7 +40,7 @@ from AuthService import (
     verify_reset_token,
 )
 from urllib.parse import quote
-from Database import get_database, get_gridfs_bucket, store_image_in_gridfs, get_image_file_from_gridfs, delete_image_from_gridfs
+from Database import get_database, get_gridfs_bucket, store_image_in_gridfs, get_image_file_from_gridfs, delete_image_from_gridfs, find_gridfs_id_by_filename
 from FluxInpaint import FluxInpaintError, apply_flux_inpaint
 from OpenAIImageEdit import OpenAIImageEditError, apply_openai_image_edit
 from ImageEdit import (
@@ -475,6 +475,83 @@ def serve_gridfs_image(file_id: str):
     if request.args.get("download"):
         headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return Response(image_bytes, mimetype=content_type, headers=headers)
+
+
+@app.get("/image/generated")
+def serve_generated_image():
+    """Generate-on-first-hit + cache a text-to-image result behind a STABLE URL.
+
+    /generate hands the browser a deterministic URL (prompt+size) instead of
+    blocking on generation. The first request here generates the image (with
+    the fallback-model retry) and caches it in GridFS under a deterministic
+    filename; every later request for the same prompt/size serves the cached
+    bytes, so reloads are instant and the same prompt never duplicates.
+    """
+    prompt = (request.args.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "A prompt is required."}), 400
+    try:
+        width = int(request.args.get("width", 1024))
+        height = int(request.args.get("height", 1024))
+    except (TypeError, ValueError):
+        width, height = 1024, 1024
+
+    digest = hashlib.sha256(f"{prompt}|{width}|{height}".encode("utf-8")).hexdigest()[:16]
+    filename = f"gen-{digest}.jpg"
+
+    def _image_response(image_bytes: bytes, content_type: str) -> Response:
+        headers = {
+            "Cache-Control": "public, max-age=31536000",  # 1 year
+            "Content-Length": str(len(image_bytes)),
+        }
+        if request.args.get("download"):
+            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return Response(image_bytes, mimetype=content_type, headers=headers)
+
+    # Serve the cached copy if we already generated this prompt/size.
+    if APP_DB is not None:
+        cached_id = find_gridfs_id_by_filename(APP_DB, filename)
+        if cached_id:
+            stored = get_image_file_from_gridfs(APP_DB, cached_id)
+            if stored:
+                image_bytes, content_type, _fn = stored
+                return _image_response(image_bytes, content_type)
+
+    # Cache miss: generate now (with fallback-model retry) and cache it.
+    try:
+        image_bytes, content_type = generate_pollinations_image_bytes(
+            prompt,
+            model_choice=DEFAULT_MODEL,
+            width=width,
+            height=height,
+            timeout=int(os.getenv("POLLINATIONS_TIMEOUT", "55")),
+        )
+    except ImageGenerationError as exc:
+        app.logger.warning("Pollinations queued/rate-limited the image: %s", exc)
+        return jsonify({
+            "error": "The image service is busy or rate-limiting right now. Please retry in a moment."
+        }), 503
+    except requests.RequestException as exc:
+        # Unreachable server-side (e.g. local WSL): let the browser load the
+        # generator URL directly so local dev still works.
+        app.logger.warning("Pollinations unreachable server-side, redirecting to generator: %s", exc)
+        return redirect(
+            build_pollinations_url(
+                prompt,
+                model_choice=DEFAULT_MODEL,
+                width=width,
+                height=height,
+                seed=stable_generation_seed(prompt, f"{width}x{height}"),
+            )
+        )
+
+    if APP_DB is not None:
+        try:
+            store_image_in_gridfs(APP_DB, image_bytes, filename, content_type=content_type)
+        except Exception:
+            app.logger.warning("Failed to cache generated image in GridFS", exc_info=True)
+
+    return _image_response(image_bytes, content_type)
 
 
 def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts: int | None = None) -> str:
@@ -1158,17 +1235,6 @@ def require_and_spend_credit(credit_type: str):
     return user, None
 
 
-def _refund_image_credit() -> None:
-    """Give back one image credit when a generation we charged for fails."""
-    try:
-        db = current_db()
-        user_id = current_user_id()
-        if db is not None and user_id:
-            add_credits(db, user_id=user_id, image=1)
-    except Exception:
-        app.logger.exception("Failed to refund image credit after a failed generation")
-
-
 def remember_video_job(job_id: str, metadata: dict) -> None:
     """Store video job metadata in MongoDB."""
     save_job(
@@ -1461,57 +1527,15 @@ def generate():
             error=credit_error[0].get_json().get("error", "Not enough image credits."),
         ), credit_error[1]
 
-    # Generate server-side (with the fallback-model retry in
-    # generate_pollinations_image_bytes) and cache the result in GridFS so the
-    # browser loads a stable, instant URL instead of re-hitting Pollinations —
-    # and so the saved history keeps working even if the live generator later
-    # queues/rate-limits. If Pollinations is queued even after fallbacks we
-    # refund the credit and show a friendly message; if the service is simply
-    # unreachable from this host (e.g. local WSL), we fall back to letting the
-    # browser load the generator URL directly (the old behaviour).
-    timeout = int(os.getenv("POLLINATIONS_TIMEOUT", "55"))
-    image_url = None
+    # Return immediately with a STABLE, deterministic app URL. The image itself
+    # is generated lazily and cached by /image/generated on first load (keyed by
+    # prompt+size), so:
+    #  - the page never blocks on generation ("takes forever" is gone),
+    #  - the same prompt always resolves to the same cached URL, so history and
+    #    the session library de-dupe correctly (no duplicate images),
+    #  - reloads and history views serve the cached bytes instantly.
+    image_url = url_for("serve_generated_image", prompt=prompt, width=width, height=height)
     metadata = {"aspect_ratio": selected_ratio, "width": width, "height": height, "provider": "pollinations"}
-    try:
-        image_bytes, content_type = generate_pollinations_image_bytes(
-            prompt,
-            model_choice=DEFAULT_MODEL,
-            width=width,
-            height=height,
-            timeout=timeout,
-        )
-        suffix = ".png" if "png" in (content_type or "") else ".jpg"
-        image_url = write_generated_bytes(
-            "image",
-            f"{prompt}|{selected_ratio}|{stable_generation_seed(prompt, selected_ratio)}",
-            image_bytes,
-            suffix=suffix,
-        )
-    except ImageGenerationError as exc:
-        _refund_image_credit()
-        app.logger.warning("Pollinations queued/rate-limited the image: %s", exc)
-        return render_index(
-            selected_ratio=selected_ratio,
-            prompt=prompt,
-            error=(
-                "The free image service is busy or rate-limiting right now, so the image "
-                "could not be generated. Your credit was not used — please try again in a "
-                "moment. (Tip: set POLLINATIONS_TOKEN for much higher limits.)"
-            ),
-        ), 503
-    except requests.RequestException as exc:
-        # Service unreachable from the server (common on local WSL). Degrade to
-        # the browser-direct URL so local dev still works; no refund since the
-        # browser will still attempt the load.
-        app.logger.warning("Could not reach Pollinations server-side, using browser-direct URL: %s", exc)
-        image_url = build_pollinations_url(
-            prompt,
-            model_choice=DEFAULT_MODEL,
-            width=width,
-            height=height,
-            seed=stable_generation_seed(prompt, selected_ratio),
-        )
-        metadata["delivery"] = "browser-direct"
 
     db = current_db()
     user_id = current_user_id()

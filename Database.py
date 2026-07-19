@@ -94,6 +94,19 @@ def store_image_in_gridfs(db, image_bytes: bytes, filename: str, content_type: s
     return str(file_id)
 
 
+def find_gridfs_id_by_filename(db, filename: str, bucket_name: str = "generated_images") -> str | None:
+    """Return the newest GridFS file id stored under `filename`, or None.
+
+    Used to serve a deterministically-named cached image so the same prompt
+    always resolves to the same stored bytes instead of regenerating."""
+    try:
+        fs = get_gridfs_bucket(db, bucket_name)
+        gridout = fs.find_one({"filename": filename})
+        return str(gridout._id) if gridout is not None else None
+    except Exception:
+        return None
+
+
 def get_image_file_from_gridfs(db, file_id: str, bucket_name: str = "generated_images") -> tuple[bytes, str, str] | None:
     """Retrieve (bytes, content_type, filename) from GridFS by file ID, or None if missing."""
     try:
