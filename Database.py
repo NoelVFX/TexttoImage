@@ -55,10 +55,21 @@ def get_mongo_client():
         if not uri:
             return None
         from pymongo import MongoClient
+        # Serverless-friendly settings: each Vercel instance keeps its own pool,
+        # so a large pool multiplied across many cold instances exhausts Atlas'
+        # connection limit (surfacing as "internal server" 500s). Keep the pool
+        # small, let idle sockets close quickly, and retry transient writes.
         _mongo_client = MongoClient(
             uri,
             serverSelectionTimeoutMS=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")),
-            maxPoolSize=10,
+            connectTimeoutMS=int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "10000")),
+            socketTimeoutMS=int(os.getenv("MONGODB_SOCKET_TIMEOUT_MS", "20000")),
+            maxPoolSize=int(os.getenv("MONGODB_MAX_POOL_SIZE", "5")),
+            minPoolSize=0,
+            maxIdleTimeMS=int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "30000")),
+            retryWrites=True,
+            retryReads=True,
+            appname="tti-app",
         )
     return _mongo_client
 

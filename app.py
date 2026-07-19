@@ -67,7 +67,14 @@ from OpenRouterVideo import (
 from OrchestratedVideo import FirstFrameResult, VideoOrchestrationError, VisionCritique, orchestrate_video_first_frame
 from PromptRewrite import PromptRewriteError, rewrite_prompt
 from Storyboard import build_storyboard_frames, regenerate_storyboard_frame
-from TexttoImage import DEFAULT_MODEL, SUPPORTED_ASPECT_RATIOS, build_pollinations_url, _is_pollinations_queue_or_rate_limit
+from TexttoImage import (
+    DEFAULT_MODEL,
+    SUPPORTED_ASPECT_RATIOS,
+    build_pollinations_url,
+    _is_pollinations_queue_or_rate_limit,
+    generate_pollinations_image_bytes,
+    ImageGenerationError,
+)
 
 # Vercel: serverless-compatible job storage using MongoDB
 from dataclasses import dataclass, asdict
@@ -1151,6 +1158,17 @@ def require_and_spend_credit(credit_type: str):
     return user, None
 
 
+def _refund_image_credit() -> None:
+    """Give back one image credit when a generation we charged for fails."""
+    try:
+        db = current_db()
+        user_id = current_user_id()
+        if db is not None and user_id:
+            add_credits(db, user_id=user_id, image=1)
+    except Exception:
+        app.logger.exception("Failed to refund image credit after a failed generation")
+
+
 def remember_video_job(job_id: str, metadata: dict) -> None:
     """Store video job metadata in MongoDB."""
     save_job(
@@ -1396,6 +1414,17 @@ def image_edit_region_status(job_id: str):
     job = get_job(job_id)
     if not job:
         return jsonify({"error": "Image edit job not found."}), 404
+
+    # Safety net: guarantee the finished edit is in history even if the worker
+    # thread's inline record failed (e.g. a transient DB hiccup). This is
+    # idempotent — record_generation_history dedupes on (user, type, result_url).
+    if job.get("status") == "completed" and isinstance(job.get("result"), dict):
+        record_masked_edit_history(
+            user_id=job.get("user_id"),
+            edit_payload=job["result"],
+            context_prompt=job.get("context_prompt"),
+        )
+
     payload = {
         "job_id": job_id,
         "status": job.get("status", "unknown"),
@@ -1432,17 +1461,57 @@ def generate():
             error=credit_error[0].get_json().get("error", "Not enough image credits."),
         ), credit_error[1]
 
-    # Build the Pollinations URL and let the browser load the image directly.
-    # This avoids the Flask request hanging when WSL cannot resolve/reach
-    # image.pollinations.ai server-side. It also keeps the UI responsive: the
-    # page returns immediately, then the image itself loads in the browser.
-    image_url = build_pollinations_url(
-        prompt,
-        model_choice=DEFAULT_MODEL,
-        width=width,
-        height=height,
-        seed=stable_generation_seed(prompt, selected_ratio),
-    )
+    # Generate server-side (with the fallback-model retry in
+    # generate_pollinations_image_bytes) and cache the result in GridFS so the
+    # browser loads a stable, instant URL instead of re-hitting Pollinations —
+    # and so the saved history keeps working even if the live generator later
+    # queues/rate-limits. If Pollinations is queued even after fallbacks we
+    # refund the credit and show a friendly message; if the service is simply
+    # unreachable from this host (e.g. local WSL), we fall back to letting the
+    # browser load the generator URL directly (the old behaviour).
+    timeout = int(os.getenv("POLLINATIONS_TIMEOUT", "55"))
+    image_url = None
+    metadata = {"aspect_ratio": selected_ratio, "width": width, "height": height, "provider": "pollinations"}
+    try:
+        image_bytes, content_type = generate_pollinations_image_bytes(
+            prompt,
+            model_choice=DEFAULT_MODEL,
+            width=width,
+            height=height,
+            timeout=timeout,
+        )
+        suffix = ".png" if "png" in (content_type or "") else ".jpg"
+        image_url = write_generated_bytes(
+            "image",
+            f"{prompt}|{selected_ratio}|{stable_generation_seed(prompt, selected_ratio)}",
+            image_bytes,
+            suffix=suffix,
+        )
+    except ImageGenerationError as exc:
+        _refund_image_credit()
+        app.logger.warning("Pollinations queued/rate-limited the image: %s", exc)
+        return render_index(
+            selected_ratio=selected_ratio,
+            prompt=prompt,
+            error=(
+                "The free image service is busy or rate-limiting right now, so the image "
+                "could not be generated. Your credit was not used — please try again in a "
+                "moment. (Tip: set POLLINATIONS_TOKEN for much higher limits.)"
+            ),
+        ), 503
+    except requests.RequestException as exc:
+        # Service unreachable from the server (common on local WSL). Degrade to
+        # the browser-direct URL so local dev still works; no refund since the
+        # browser will still attempt the load.
+        app.logger.warning("Could not reach Pollinations server-side, using browser-direct URL: %s", exc)
+        image_url = build_pollinations_url(
+            prompt,
+            model_choice=DEFAULT_MODEL,
+            width=width,
+            height=height,
+            seed=stable_generation_seed(prompt, selected_ratio),
+        )
+        metadata["delivery"] = "browser-direct"
 
     db = current_db()
     user_id = current_user_id()
@@ -1454,7 +1523,7 @@ def generate():
                 media_type="image",
                 prompt=prompt,
                 result_url=image_url,
-                metadata={"aspect_ratio": selected_ratio, "width": width, "height": height, "provider": "pollinations"},
+                metadata=metadata,
             )
         except Exception:
             app.logger.exception("Failed to record image generation history")
