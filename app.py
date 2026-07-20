@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import unquote, urlparse, urlencode
+from urllib.parse import unquote, urlparse, urlencode, parse_qs
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, url_for, has_request_context, session, redirect
@@ -281,7 +281,71 @@ def local_generated_file_from_url(image_url: str) -> Path | None:
     return candidate
 
 
+GENERATED_URL_PATH = "/image/generated"
+
+
+def cached_generated_image(prompt: str, width: int, height: int) -> tuple[bytes, str]:
+    """Return (bytes, content_type) for a text-to-image prompt, serving the
+    GridFS cache when present and generating + caching on a miss.
+
+    Shared by the /image/generated route and the edit source-resolver so the
+    same prompt always maps to the same deterministically-named cached bytes.
+    """
+    digest = hashlib.sha256(f"{prompt}|{width}|{height}".encode("utf-8")).hexdigest()[:16]
+    filename = f"gen-{digest}.jpg"
+
+    if APP_DB is not None:
+        cached_id = find_gridfs_id_by_filename(APP_DB, filename)
+        if cached_id:
+            stored = get_image_file_from_gridfs(APP_DB, cached_id)
+            if stored:
+                image_bytes, content_type, _fn = stored
+                return image_bytes, content_type
+
+    image_bytes, content_type = generate_pollinations_image_bytes(
+        prompt,
+        model_choice=DEFAULT_MODEL,
+        width=width,
+        height=height,
+        timeout=int(os.getenv("POLLINATIONS_TIMEOUT", "55")),
+    )
+    if APP_DB is not None:
+        try:
+            store_image_in_gridfs(APP_DB, image_bytes, filename, content_type=content_type)
+        except Exception:
+            app.logger.warning("Failed to cache generated image in GridFS", exc_info=True)
+    return image_bytes, content_type
+
+
+def generated_image_params_from_url(image_url: str) -> tuple[str, int, int] | None:
+    """Parse (prompt, width, height) from an /image/generated app URL, else None."""
+    parsed = urlparse(image_url)
+    if parsed.path != GENERATED_URL_PATH:
+        return None
+    qs = parse_qs(parsed.query)
+    prompt = (qs.get("prompt", [""])[0] or "").strip()
+    if not prompt:
+        return None
+    try:
+        width = int(qs.get("width", ["1024"])[0])
+        height = int(qs.get("height", ["1024"])[0])
+    except (TypeError, ValueError):
+        width, height = 1024, 1024
+    return prompt, width, height
+
+
 def download_image_bytes(image_url: str, *, timeout: int = 45) -> tuple[bytes, str]:
+    # App-generated images (e.g. /image/generated?prompt=...): resolve from the
+    # GridFS cache (regenerating on a cold miss) instead of an HTTP GET — the URL
+    # is relative, so requests.get() would fail with "No scheme supplied".
+    gen_params = generated_image_params_from_url(image_url)
+    if gen_params is not None:
+        prompt, width, height = gen_params
+        try:
+            return cached_generated_image(prompt, width, height)
+        except ImageGenerationError as exc:
+            raise ImageEditError(f"Could not load the generated image to edit: {exc}")
+
     # GridFS-served images (e.g. /api/images/gridfs/<id>): read straight from the
     # database instead of HTTP — relative URLs aren't fetchable and self-requests
     # would burn a second serverless invocation on Vercel.
@@ -496,36 +560,8 @@ def serve_generated_image():
     except (TypeError, ValueError):
         width, height = 1024, 1024
 
-    digest = hashlib.sha256(f"{prompt}|{width}|{height}".encode("utf-8")).hexdigest()[:16]
-    filename = f"gen-{digest}.jpg"
-
-    def _image_response(image_bytes: bytes, content_type: str) -> Response:
-        headers = {
-            "Cache-Control": "public, max-age=31536000",  # 1 year
-            "Content-Length": str(len(image_bytes)),
-        }
-        if request.args.get("download"):
-            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return Response(image_bytes, mimetype=content_type, headers=headers)
-
-    # Serve the cached copy if we already generated this prompt/size.
-    if APP_DB is not None:
-        cached_id = find_gridfs_id_by_filename(APP_DB, filename)
-        if cached_id:
-            stored = get_image_file_from_gridfs(APP_DB, cached_id)
-            if stored:
-                image_bytes, content_type, _fn = stored
-                return _image_response(image_bytes, content_type)
-
-    # Cache miss: generate now (with fallback-model retry) and cache it.
     try:
-        image_bytes, content_type = generate_pollinations_image_bytes(
-            prompt,
-            model_choice=DEFAULT_MODEL,
-            width=width,
-            height=height,
-            timeout=int(os.getenv("POLLINATIONS_TIMEOUT", "55")),
-        )
+        image_bytes, content_type = cached_generated_image(prompt, width, height)
     except ImageGenerationError as exc:
         app.logger.warning("Pollinations queued/rate-limited the image: %s", exc)
         return jsonify({
@@ -545,13 +581,13 @@ def serve_generated_image():
             )
         )
 
-    if APP_DB is not None:
-        try:
-            store_image_in_gridfs(APP_DB, image_bytes, filename, content_type=content_type)
-        except Exception:
-            app.logger.warning("Failed to cache generated image in GridFS", exc_info=True)
-
-    return _image_response(image_bytes, content_type)
+    headers = {
+        "Cache-Control": "public, max-age=31536000",  # 1 year
+        "Content-Length": str(len(image_bytes)),
+    }
+    if request.args.get("download"):
+        headers["Content-Disposition"] = 'attachment; filename="generated-image.jpg"'
+    return Response(image_bytes, mimetype=content_type, headers=headers)
 
 
 def materialize_storyboard_frame(frame, *, timeout: int | None = None, attempts: int | None = None) -> str:
