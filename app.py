@@ -1666,6 +1666,30 @@ def regenerate_video_storyboard_frame():
     return jsonify({"frame": storyboard_frame_payload(frame), "workflow": "pollinations-storyboard-frame-regenerated"})
 
 
+def ensure_stable_frame_url(frame_url: str) -> str:
+    """Return a stable, app-served image URL for the I2V start frame.
+
+    OpenRouter/Wan downloads the first frame itself. A dynamic generator URL
+    (Pollinations, or our /image/generated) can be slow, queued, or return a
+    non-image warm-up page, which the provider reports as "failed to process
+    the file". Materialize such URLs to a cached GridFS image once, so the
+    provider always fetches a plain, ready static image. Already-materialized
+    GridFS URLs (e.g. storyboard frames) pass through unchanged.
+    """
+    frame_url = (frame_url or "").strip()
+    if not frame_url or gridfs_file_id_from_url(frame_url) is not None:
+        return frame_url
+    try:
+        # download_image_bytes resolves /image/generated, Pollinations, local,
+        # and other absolute image URLs to raw bytes.
+        image_bytes, content_type = download_image_bytes(frame_url)
+    except Exception as exc:
+        app.logger.warning("Could not materialize video start frame (%s): %s", frame_url, exc)
+        return frame_url
+    suffix = ".png" if "png" in (content_type or "") else ".jpg"
+    return write_generated_bytes("video-start-frame", frame_url, image_bytes, suffix=suffix)
+
+
 @app.post("/video/start")
 def start_video_generation():
     payload = request.get_json(silent=True) or request.form
@@ -1729,6 +1753,11 @@ def start_video_generation():
                 }
             ), 500
 
+    # Materialize dynamic generator URLs to a stable GridFS image so OpenRouter
+    # never has to fetch a slow/queued generator URL ("failed to process the
+    # file"). Storyboard frames are usually already GridFS and pass through.
+    stable_frame_url = ensure_stable_frame_url(first_frame.start_frame_url)
+
     try:
         job = submit_video_job(
             first_frame.optimized_prompt,
@@ -1738,7 +1767,7 @@ def start_video_generation():
             generate_audio=generate_audio,
             # OpenRouter fetches this itself: app-relative URLs (GridFS-served
             # frames) must become absolute or it 400s with "Invalid URL format".
-            first_frame_url=public_absolute_url(first_frame.start_frame_url),
+            first_frame_url=public_absolute_url(stable_frame_url),
             timeout=max(5, int(os.environ.get("VIDEO_SUBMIT_TIMEOUT", "8"))),
         )
     except (OpenRouterVideoError, ValueError) as exc:
