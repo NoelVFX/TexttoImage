@@ -1083,7 +1083,17 @@ def billing_success():
 def stripe_webhook():
     if stripe is None:
         return jsonify({"error": "Stripe SDK is not installed."}), 503
-    payload = request.get_data()
+    # Vercel may parse JSON body before Flask sees it; get_data() handles both
+    payload = request.get_data(cache=False)
+    # Fallback: if get_data() is empty (Vercel consumed stream), try wsgi.input directly
+    if not payload:
+        wsgi_input = request.environ.get('wsgi.input')
+        if wsgi_input:
+            try:
+                wsgi_input.seek(0)
+                payload = wsgi_input.read()
+            except Exception:
+                pass
     signature = request.headers.get("Stripe-Signature")
     secret = stripe_webhook_secret()
     if not secret:
